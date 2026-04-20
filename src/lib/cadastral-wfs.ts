@@ -106,9 +106,18 @@ function buildTerrainSearchAnchors(sources: SourceFeature[]) {
     sourceIds: string[];
     maxDistanceMeters: number;
   }> = [];
-  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const spatialSources = [...sources].sort((left, right) => {
+    const latDelta = left.latitude - right.latitude;
 
-  for (const source of sources) {
+    if (Math.abs(latDelta) > 0.015) {
+      return latDelta;
+    }
+
+    return left.longitude - right.longitude;
+  });
+  const sourceById = new Map(spatialSources.map((source) => [source.id, source]));
+
+  for (const source of spatialSources) {
     const sourcePoint = point([source.longitude, source.latitude]);
     let matchedAnchor:
       | {
@@ -173,16 +182,26 @@ function buildTerrainSearchAnchors(sources: SourceFeature[]) {
     matchedAnchor.maxDistanceMeters = nextMaxDistance;
   }
 
-  return anchors.map((anchor, index) => ({
-    id: `cad-anchor-${index + 1}`,
-    lat: anchor.lat,
-    lng: anchor.lng,
-    probeRadiusMeters: Math.min(
-      SEARCH_RADIUS_METERS * 2,
-      Math.ceil(SEARCH_RADIUS_METERS + anchor.maxDistanceMeters),
-    ),
-    sourceIds: anchor.sourceIds,
-  })) satisfies TerrainSearchAnchor[];
+  return anchors
+    .map((anchor, index) => ({
+      id: `cad-anchor-${index + 1}`,
+      lat: anchor.lat,
+      lng: anchor.lng,
+      probeRadiusMeters: Math.min(
+        SEARCH_RADIUS_METERS * 2,
+        Math.ceil(SEARCH_RADIUS_METERS + anchor.maxDistanceMeters),
+      ),
+      sourceIds: anchor.sourceIds,
+    }))
+    .sort((left, right) => {
+      const latDelta = left.lat - right.lat;
+
+      if (Math.abs(latDelta) > 0.015) {
+        return latDelta;
+      }
+
+      return left.lng - right.lng;
+    }) satisfies TerrainSearchAnchor[];
 }
 
 function metersToLatDegrees(meters: number) {
