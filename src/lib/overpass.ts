@@ -30,7 +30,7 @@ const MAX_TERRAINS = 250;
 const OVERPASS_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
-const SOURCES_PER_AGRI_CHUNK = 18;
+const SOURCES_PER_AGRI_CHUNK = 40;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
 
 type OverpassElement = {
@@ -472,12 +472,16 @@ async function fetchAgriculturalWaysNearSources(
   reporter?: ProgressReporter,
 ) {
   if (provinceSources.length === 0) {
-    return [] as OverpassElement[];
+    return {
+      ways: [] as OverpassElement[],
+      warning: null as string | null,
+    };
   }
 
   const sourceChunks = chunkArray(provinceSources, SOURCES_PER_AGRI_CHUNK);
   const allElements: OverpassElement[] = [];
   const province = PROVINCE_MAP[provinceId];
+  let warning: string | null = null;
 
   reportProgress(
     reporter,
@@ -497,12 +501,22 @@ ${buildAroundStatements(AGRICULTURAL_SELECTORS, sourceChunk)}
 out geom;
 `;
 
-    const data = await fetchOverpass(
-      query,
-      reporter,
-      `${province.name} terreni blocco ${index + 1}/${sourceChunks.length}`,
-    );
-    allElements.push(...data.elements);
+    try {
+      const data = await fetchOverpass(
+        query,
+        reporter,
+        `${province.name} terreni blocco ${index + 1}/${sourceChunks.length}`,
+      );
+      allElements.push(...data.elements);
+    } catch (error) {
+      if (error instanceof OverpassRateLimitError) {
+        warning = `${province.name}: scansione terreni completata parzialmente per rate limit Overpass al blocco ${index + 1}/${sourceChunks.length}.`;
+        reportProgress(reporter, warning);
+        break;
+      }
+
+      throw error;
+    }
   }
 
   const unique = new Map<string, OverpassElement>();
@@ -518,7 +532,10 @@ out geom;
     `${province.name}: poligoni agricoli candidati ${ways.length}.`,
   );
 
-  return ways;
+  return {
+    ways,
+    warning,
+  };
 }
 
 function mergeSources(sources: SourceFeature[]) {
@@ -660,17 +677,20 @@ async function scanProvince(
   ).sort((left, right) =>
     left.name.localeCompare(right.name, "it"),
   );
-  const landWays =
+  const terrainLookup =
     sources.length === 0
-      ? []
+      ? {
+          ways: [] as OverpassElement[],
+          warning: null as string | null,
+        }
       : await fetchAgriculturalWaysNearSources(provinceId, sources, reporter);
 
   reportProgress(
     reporter,
-    `${province.name}: calcolo prossimità terreno-fonte su ${landWays.length} poligoni.`,
+    `${province.name}: calcolo prossimità terreno-fonte su ${terrainLookup.ways.length} poligoni.`,
   );
 
-  const terrains = landWays
+  const terrains = terrainLookup.ways
     .map((element) => computeTerrainCandidate(provinceId, element, sources))
     .filter((terrain): terrain is TerrainFeature => terrain !== null)
     .sort((left, right) => left.distanceMeters - right.distanceMeters);
@@ -683,6 +703,7 @@ async function scanProvince(
   return {
     sources,
     terrains,
+    warnings: terrainLookup.warning ? [terrainLookup.warning] : [],
   };
 }
 
@@ -724,6 +745,7 @@ export async function runScan(
   const terrains = provinceResults
     .flatMap((result) => result.terrains)
     .sort((left, right) => left.distanceMeters - right.distanceMeters);
+  warnings.push(...provinceResults.flatMap((result) => result.warnings));
 
   if (terrains.length > MAX_TERRAINS) {
     warnings.push(
