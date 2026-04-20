@@ -38,7 +38,15 @@ export async function GET(request: NextRequest) {
           return;
         }
 
-        controller.enqueue(encoder.encode(buildEvent(event.type, event)));
+        try {
+          controller.enqueue(encoder.encode(buildEvent(event.type, event)));
+        } catch {
+          closed = true;
+
+          if (heartbeatId) {
+            clearInterval(heartbeatId);
+          }
+        }
       };
 
       const appendLog = (message: string) => {
