@@ -1043,7 +1043,7 @@ export default function TerreniDashboard() {
           </section>
         </main>
 
-        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_390px]">
+        <section className="grid gap-6 xl:items-start xl:grid-cols-[minmax(0,1fr)_390px]">
           <div className="terrain-shell p-5 lg:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
@@ -1142,7 +1142,7 @@ export default function TerreniDashboard() {
             </div>
           </div>
 
-          <aside className="terrain-shell terrain-shell-dark p-6">
+          <aside className="terrain-shell terrain-shell-dark terrain-sticky-rail p-6">
             <div className="terrain-keyline terrain-keyline-dark">
               Asset dossier
             </div>

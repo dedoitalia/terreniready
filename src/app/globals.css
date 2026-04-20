@@ -262,6 +262,17 @@ button {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
+@media (min-width: 1280px) {
+  .terrain-sticky-rail {
+    position: sticky;
+    top: 1.5rem;
+    align-self: start;
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
 .leaflet-container {
   font-family: var(--font-space-grotesk), sans-serif;
   background: #d6ddd1;
