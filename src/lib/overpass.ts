@@ -18,9 +18,8 @@ import type {
 } from "@/types/scan";
 
 const OVERPASS_ENDPOINTS = [
-  "https://overpass.private.coffee/api/interpreter",
-  "https://overpass-api.de/api/interpreter",
   "https://lz4.overpass-api.de/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
   "https://z.overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
 ];
@@ -107,6 +106,10 @@ function reportProgress(reporter: ProgressReporter | undefined, message: string)
   reporter?.({ message });
 }
 
+function endpointRole(index: number) {
+  return index === 0 ? "primario" : `fallback ${index}`;
+}
+
 function parseRetryAfterMs(headerValue: string | null) {
   if (!headerValue) {
     return DEFAULT_ENDPOINT_COOLDOWN_MS;
@@ -191,14 +194,16 @@ async function fetchOverpass(
     let lastError: Error | null = null;
     let sawRateLimit = false;
 
-    for (const endpoint of OVERPASS_ENDPOINTS) {
+    for (const [index, endpoint] of OVERPASS_ENDPOINTS.entries()) {
       const cooldownUntil = endpointCooldowns.get(endpoint) ?? 0;
+      const hostname = new URL(endpoint).hostname;
+      const role = endpointRole(index);
 
       if (cooldownUntil > Date.now()) {
         sawRateLimit = true;
         reportProgress(
           reporter,
-          `${contextLabel ?? "Query"}: salto ${new URL(endpoint).hostname} per cooldown attivo.`,
+          `${contextLabel ?? "Query"}: salto ${hostname} (${role}) per cooldown attivo.`,
         );
         continue;
       }
@@ -206,7 +211,7 @@ async function fetchOverpass(
       try {
         reportProgress(
           reporter,
-          `${contextLabel ?? "Query"}: interrogo ${new URL(endpoint).hostname}.`,
+          `${contextLabel ?? "Query"}: interrogo ${hostname} (${role}).`,
         );
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
@@ -240,7 +245,7 @@ async function fetchOverpass(
           lastError = new Error(`${endpoint} responded with 429`);
           reportProgress(
             reporter,
-            `${contextLabel ?? "Query"}: ${new URL(endpoint).hostname} ha risposto 429, passo al prossimo endpoint.`,
+            `${contextLabel ?? "Query"}: ${hostname} (${role}) ha risposto 429, passo al prossimo endpoint.`,
           );
           await delay(ENDPOINT_RETRY_DELAY_MS);
           continue;
@@ -250,7 +255,7 @@ async function fetchOverpass(
           lastError = new Error(`${endpoint} responded with ${response.status}`);
           reportProgress(
             reporter,
-            `${contextLabel ?? "Query"}: ${new URL(endpoint).hostname} ha risposto ${response.status}, provo il prossimo endpoint.`,
+            `${contextLabel ?? "Query"}: ${hostname} (${role}) ha risposto ${response.status}, provo il prossimo endpoint.`,
           );
           continue;
         }
@@ -277,7 +282,7 @@ async function fetchOverpass(
           lastError = new Error(`${endpoint} timed out after ${OVERPASS_REQUEST_TIMEOUT_MS}ms`);
           reportProgress(
             reporter,
-            `${contextLabel ?? "Query"}: ${new URL(endpoint).hostname} non ha risposto entro ${Math.round(OVERPASS_REQUEST_TIMEOUT_MS / 1000)}s, provo il prossimo endpoint.`,
+            `${contextLabel ?? "Query"}: ${hostname} (${role}) non ha risposto entro ${Math.round(OVERPASS_REQUEST_TIMEOUT_MS / 1000)}s, provo il prossimo endpoint.`,
           );
           continue;
         }
@@ -290,7 +295,7 @@ async function fetchOverpass(
           error instanceof Error ? error : new Error("Unknown Overpass error");
         reportProgress(
           reporter,
-          `${contextLabel ?? "Query"}: errore rete su ${new URL(endpoint).hostname}, provo il prossimo endpoint.`,
+          `${contextLabel ?? "Query"}: errore rete su ${hostname} (${role}), provo il prossimo endpoint.`,
         );
       }
     }
