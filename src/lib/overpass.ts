@@ -25,6 +25,9 @@ const OVERPASS_ENDPOINTS = [
 
 const SEARCH_RADIUS_METERS = 350;
 const MAX_TERRAINS = 250;
+const OVERPASS_CACHE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
+const ENDPOINT_RETRY_DELAY_MS = 450;
 
 type OverpassElement = {
   type: "node" | "way";
@@ -45,6 +48,87 @@ type OverpassElement = {
 type OverpassResponse = {
   elements: OverpassElement[];
 };
+
+type CachedOverpassValue = {
+  expiresAt: number;
+  value: OverpassResponse;
+};
+
+class OverpassRateLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OverpassRateLimitError";
+  }
+}
+
+const overpassCache = getGlobalStore<Map<string, CachedOverpassValue>>(
+  "__terreniReadyOverpassCache",
+  () => new Map(),
+);
+const overpassInflight = getGlobalStore<Map<string, Promise<OverpassResponse>>>(
+  "__terreniReadyOverpassInflight",
+  () => new Map(),
+);
+const endpointCooldowns = getGlobalStore<Map<string, number>>(
+  "__terreniReadyOverpassEndpointCooldowns",
+  () => new Map(),
+);
+
+function getGlobalStore<T>(key: string, init: () => T) {
+  const globalScope = globalThis as Record<string, unknown>;
+  const existing = globalScope[key];
+
+  if (existing) {
+    return existing as T;
+  }
+
+  const created = init();
+  globalScope[key] = created;
+  return created;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function parseRetryAfterMs(headerValue: string | null) {
+  if (!headerValue) {
+    return DEFAULT_ENDPOINT_COOLDOWN_MS;
+  }
+
+  const asSeconds = Number(headerValue);
+
+  if (Number.isFinite(asSeconds) && asSeconds > 0) {
+    return asSeconds * 1000;
+  }
+
+  const retryAt = Date.parse(headerValue);
+
+  if (!Number.isNaN(retryAt)) {
+    return Math.max(retryAt - Date.now(), DEFAULT_ENDPOINT_COOLDOWN_MS);
+  }
+
+  return DEFAULT_ENDPOINT_COOLDOWN_MS;
+}
+
+function selectorMatches(
+  tags: Record<string, string>,
+  selector: { key: string; value?: string },
+) {
+  const tagValue = tags[selector.key];
+
+  if (tagValue === undefined) {
+    return false;
+  }
+
+  if (!selector.value) {
+    return true;
+  }
+
+  return tagValue === selector.value;
+}
 
 function bboxString(bbox: BoundingBox) {
   return `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
@@ -71,37 +155,94 @@ function buildSelectorStatements(
 }
 
 async function fetchOverpass(query: string): Promise<OverpassResponse> {
-  let lastError: Error | null = null;
+  const now = Date.now();
+  const cached = overpassCache.get(query);
 
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "text/plain;charset=UTF-8",
-        },
-        body: query,
-      });
-
-      if (!response.ok) {
-        throw new Error(`${endpoint} responded with ${response.status}`);
-      }
-
-      const json = (await response.json()) as OverpassResponse;
-
-      if (!Array.isArray(json.elements)) {
-        throw new Error(`${endpoint} returned an invalid payload`);
-      }
-
-      return json;
-    } catch (error) {
-      lastError =
-        error instanceof Error ? error : new Error("Unknown Overpass error");
-    }
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
   }
 
-  throw lastError ?? new Error("No Overpass endpoint available");
+  const inflight = overpassInflight.get(query);
+
+  if (inflight) {
+    return inflight;
+  }
+
+  const requestPromise = (async () => {
+    let lastError: Error | null = null;
+    let sawRateLimit = false;
+
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      const cooldownUntil = endpointCooldowns.get(endpoint) ?? 0;
+
+      if (cooldownUntil > Date.now()) {
+        sawRateLimit = true;
+        continue;
+      }
+
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "text/plain;charset=UTF-8",
+            "User-Agent": "TerreniReady/0.1 (+https://terreniready.onrender.com)",
+          },
+          body: query,
+        });
+
+        if (response.status === 429) {
+          sawRateLimit = true;
+          endpointCooldowns.set(
+            endpoint,
+            Date.now() + parseRetryAfterMs(response.headers.get("retry-after")),
+          );
+          lastError = new Error(`${endpoint} responded with 429`);
+          await delay(ENDPOINT_RETRY_DELAY_MS);
+          continue;
+        }
+
+        if (!response.ok) {
+          lastError = new Error(`${endpoint} responded with ${response.status}`);
+          continue;
+        }
+
+        const json = (await response.json()) as OverpassResponse;
+
+        if (!Array.isArray(json.elements)) {
+          lastError = new Error(`${endpoint} returned an invalid payload`);
+          continue;
+        }
+
+        overpassCache.set(query, {
+          expiresAt: Date.now() + OVERPASS_CACHE_TTL_MS,
+          value: json,
+        });
+
+        return json;
+      } catch (error) {
+        lastError =
+          error instanceof Error ? error : new Error("Unknown Overpass error");
+      }
+    }
+
+    if (sawRateLimit) {
+      throw new OverpassRateLimitError(
+        "Overpass è temporaneamente in rate limit. Aspetta circa 1-2 minuti e riprova.",
+      );
+    }
+
+    throw lastError ?? new Error("No Overpass endpoint available");
+  })();
+
+  overpassInflight.set(query, requestPromise);
+
+  try {
+    return await requestPromise;
+  } finally {
+    overpassInflight.delete(query);
+  }
 }
 
 function sourceCoordinates(element: OverpassElement) {
@@ -149,16 +290,28 @@ function formatAddress(tags: Record<string, string>) {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
-async function fetchSourcesForCategory(
+function categoryIdsForTags(
+  tags: Record<string, string>,
+  categoryIds: SourceCategoryId[],
+) {
+  return categoryIds.filter((categoryId) => {
+    const category = SOURCE_CATEGORY_MAP[categoryId];
+    return category.selectors.some((selector) => selectorMatches(tags, selector));
+  });
+}
+
+async function fetchSourcesForProvince(
   provinceId: ProvinceId,
-  categoryId: SourceCategoryId,
+  categoryIds: SourceCategoryId[],
 ) {
   const province = PROVINCE_MAP[provinceId];
-  const category = SOURCE_CATEGORY_MAP[categoryId];
+  const selectors = categoryIds.flatMap(
+    (categoryId) => SOURCE_CATEGORY_MAP[categoryId].selectors,
+  );
   const query = `
 [out:json][timeout:40];
 (
-${buildSelectorStatements(category.selectors, province.bbox, ["node", "way"])}
+${buildSelectorStatements(selectors, province.bbox, ["node", "way"])}
 );
 out center;
 `;
@@ -169,10 +322,14 @@ out center;
     .map((element) => {
       const coordinates = sourceCoordinates(element);
       const tags = element.tags ?? {};
+      const matchedCategoryIds = categoryIdsForTags(tags, categoryIds);
 
-      if (!coordinates) {
+      if (!coordinates || matchedCategoryIds.length === 0) {
         return null;
       }
+
+      const primaryCategoryId = matchedCategoryIds[0];
+      const primaryCategory = SOURCE_CATEGORY_MAP[primaryCategoryId];
 
       return {
         id: `${element.type}-${element.id}`,
@@ -182,9 +339,9 @@ out center;
         name:
           tags.name ||
           tags.brand ||
-          `${category.label.slice(0, -1)} ${element.type.toUpperCase()} ${element.id}`,
-        primaryCategoryId: categoryId,
-        categoryIds: [categoryId],
+          `${primaryCategory.label.slice(0, -1)} ${element.type.toUpperCase()} ${element.id}`,
+        primaryCategoryId,
+        categoryIds: matchedCategoryIds,
         latitude: coordinates.lat,
         longitude: coordinates.lng,
         address: formatAddress(tags),
@@ -340,11 +497,9 @@ async function scanProvince(
   provinceId: ProvinceId,
   categoryIds: SourceCategoryId[],
 ) {
-  const sourceResponses = await Promise.all(
-    categoryIds.map((categoryId) => fetchSourcesForCategory(provinceId, categoryId)),
-  );
-
-  const sources = mergeSources(sourceResponses.flat()).sort((left, right) =>
+  const sources = mergeSources(
+    await fetchSourcesForProvince(provinceId, categoryIds),
+  ).sort((left, right) =>
     left.name.localeCompare(right.name, "it"),
   );
   const landWays = await fetchAgriculturalWays(provinceId);
@@ -378,9 +533,11 @@ export async function runScan(
     throw new Error("Seleziona almeno una tipologia di fonte emissiva.");
   }
 
-  const provinceResults = await Promise.all(
-    provinces.map((provinceId) => scanProvince(provinceId, categories)),
-  );
+  const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
+
+  for (const provinceId of provinces) {
+    provinceResults.push(await scanProvince(provinceId, categories));
+  }
 
   const sources = provinceResults
     .flatMap((result) => result.sources)
@@ -405,6 +562,12 @@ export async function runScan(
   if (sources.length > 0 && terrains.length === 0) {
     warnings.push(
       "Le fonti sono state trovate, ma non sono emersi poligoni agricoli OSM entro 350 m nel set corrente.",
+    );
+  }
+
+  if (overpassCache.size > 0) {
+    warnings.push(
+      "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
     );
   }
 
