@@ -1,4 +1,14 @@
-import { area, centerOfMass, point, pointToPolygonDistance, polygon } from "@turf/turf";
+import {
+  area,
+  booleanPointInPolygon,
+  centerOfMass,
+  distance,
+  lineIntersect,
+  lineString,
+  point,
+  pointToPolygonDistance,
+  polygon,
+} from "@turf/turf";
 
 import { PROVINCE_MAP } from "@/lib/province-data";
 import {
@@ -30,10 +40,32 @@ const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
 const SOURCES_PER_AGRI_CHUNK = 40;
+const TERRAINS_PER_OBSTACLE_CHUNK = 20;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
 const OVERPASS_MAX_CYCLES = 2;
 const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
 const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
+const TERRAIN_OBSTACLE_MARGIN_METERS = 25;
+const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
+
+const EXCLUDED_URBAN_LANDUSES = new Set(["residential", "industrial", "commercial"]);
+const ROAD_SELECTORS = [
+  { key: "highway", value: "motorway" },
+  { key: "highway", value: "trunk" },
+  { key: "highway", value: "primary" },
+  { key: "highway", value: "secondary" },
+  { key: "highway", value: "tertiary" },
+  { key: "highway", value: "unclassified" },
+  { key: "highway", value: "residential" },
+  { key: "highway", value: "living_street" },
+  { key: "highway", value: "service" },
+] as const;
+const URBAN_AREA_SELECTORS = [
+  { key: "landuse", value: "residential" },
+  { key: "landuse", value: "industrial" },
+  { key: "landuse", value: "commercial" },
+] as const;
+const MAJOR_ROAD_VALUES = new Set(["motorway", "trunk", "primary", "secondary"]);
 
 type OverpassElement = {
   type: "node" | "way";
@@ -55,6 +87,15 @@ type OverpassResponse = {
   elements: OverpassElement[];
 };
 
+type CoordinateRing = Array<[number, number]>;
+
+type CoordinateBounds = {
+  minLat: number;
+  minLng: number;
+  maxLat: number;
+  maxLng: number;
+};
+
 type CachedOverpassValue = {
   expiresAt: number;
   value: OverpassResponse;
@@ -69,6 +110,36 @@ type ProgressReporter = (event: ScanProgressEvent) => void;
 
 type RunScanOptions = {
   reportProgress?: ProgressReporter;
+};
+
+type PreparedPolygonObstacle = {
+  id: string;
+  ring: CoordinateRing;
+  bounds: CoordinateBounds;
+  feature: ReturnType<typeof polygon>;
+  tags: Record<string, string>;
+};
+
+type PreparedLineObstacle = {
+  id: string;
+  coords: CoordinateRing;
+  bounds: CoordinateBounds;
+  feature: ReturnType<typeof lineString>;
+  tags: Record<string, string>;
+};
+
+type TerrainObstacleLookup = {
+  buildings: PreparedPolygonObstacle[];
+  urbanAreas: PreparedPolygonObstacle[];
+  roads: PreparedLineObstacle[];
+  warning: string | null;
+};
+
+type TerrainFilterStats = {
+  rejectedByTags: number;
+  rejectedByBuildings: number;
+  rejectedByUrbanAreas: number;
+  rejectedByRoads: number;
 };
 
 class OverpassRateLimitError extends Error {
@@ -396,11 +467,13 @@ function sourceCoordinates(element: OverpassElement) {
 }
 
 function ringFromGeometry(geometry: OverpassElement["geometry"]) {
-  if (!geometry || geometry.length < 3) {
+  const coords = coordinatesFromGeometry(geometry);
+
+  if (!coords || coords.length < 3) {
     return null;
   }
 
-  const ring = geometry.map((vertex) => [vertex.lon, vertex.lat] as [number, number]);
+  const ring = [...coords];
   const first = ring[0];
   const last = ring[ring.length - 1];
 
@@ -413,6 +486,41 @@ function ringFromGeometry(geometry: OverpassElement["geometry"]) {
   }
 
   return ring;
+}
+
+function coordinatesFromGeometry(geometry: OverpassElement["geometry"]) {
+  if (!geometry || geometry.length < 2) {
+    return null;
+  }
+
+  return geometry.map((vertex) => [vertex.lon, vertex.lat] as [number, number]);
+}
+
+function boundsFromCoordinates(coords: CoordinateRing): CoordinateBounds {
+  const lats = coords.map((coordinate) => coordinate[1]);
+  const lngs = coords.map((coordinate) => coordinate[0]);
+
+  return {
+    minLat: Math.min(...lats),
+    minLng: Math.min(...lngs),
+    maxLat: Math.max(...lats),
+    maxLng: Math.max(...lngs),
+  };
+}
+
+function boundsOverlap(left: CoordinateBounds, right: CoordinateBounds) {
+  return !(
+    left.maxLat < right.minLat ||
+    left.minLat > right.maxLat ||
+    left.maxLng < right.minLng ||
+    left.minLng > right.maxLng
+  );
+}
+
+function isTerrainHardExcluded(tags: Record<string, string>) {
+  const landuse = tags.landuse?.trim().toLowerCase();
+
+  return Boolean(tags.building) || (landuse ? EXCLUDED_URBAN_LANDUSES.has(landuse) : false);
 }
 
 function formatAddress(tags: Record<string, string>) {
@@ -522,6 +630,299 @@ function buildAroundStatements(
       }),
     )
     .join("\n");
+}
+
+function buildAroundStatementsForTerrains(
+  selectors: ReadonlyArray<{ key: string; value?: string }>,
+  terrains: TerrainFeature[],
+) {
+  return terrains
+    .flatMap((terrain) =>
+      selectors.map((selector) => {
+        const filter = selector.value
+          ? `["${selector.key}"="${selector.value}"]`
+          : `["${selector.key}"]`;
+
+        return `way${filter}(around:${terrainProbeRadius(terrain)},${terrain.center.lat},${terrain.center.lng});`;
+      }),
+    )
+    .join("\n");
+}
+
+function terrainProbeRadius(terrain: TerrainFeature) {
+  const centerPoint = point([terrain.center.lng, terrain.center.lat]);
+  const maxVertexDistance = terrain.coordinates.reduce((maxDistance, coordinate) => {
+    const vertexPoint = point(coordinate);
+
+    return Math.max(
+      maxDistance,
+      distance(centerPoint, vertexPoint, { units: "meters" }),
+    );
+  }, 0);
+
+  return Math.min(
+    SEARCH_RADIUS_METERS,
+    Math.max(
+      TERRAIN_OBSTACLE_MIN_RADIUS_METERS,
+      Math.ceil(maxVertexDistance + TERRAIN_OBSTACLE_MARGIN_METERS),
+    ),
+  );
+}
+
+function preparePolygonObstacle(element: OverpassElement) {
+  const ring = ringFromGeometry(element.geometry);
+
+  if (!ring) {
+    return null;
+  }
+
+  try {
+    return {
+      id: `${element.type}-${element.id}`,
+      ring,
+      bounds: boundsFromCoordinates(ring),
+      feature: polygon([ring]),
+      tags: element.tags ?? {},
+    } satisfies PreparedPolygonObstacle;
+  } catch {
+    return null;
+  }
+}
+
+function prepareLineObstacle(element: OverpassElement) {
+  const coords = coordinatesFromGeometry(element.geometry);
+
+  if (!coords || coords.length < 2) {
+    return null;
+  }
+
+  try {
+    return {
+      id: `${element.type}-${element.id}`,
+      coords,
+      bounds: boundsFromCoordinates(coords),
+      feature: lineString(coords),
+      tags: element.tags ?? {},
+    } satisfies PreparedLineObstacle;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTerrainObstaclesForProvince(
+  provinceId: ProvinceId,
+  terrains: TerrainFeature[],
+  reporter?: ProgressReporter,
+): Promise<TerrainObstacleLookup> {
+  if (terrains.length === 0) {
+    return {
+      buildings: [],
+      urbanAreas: [],
+      roads: [],
+      warning: null,
+    };
+  }
+
+  const terrainChunks = chunkArray(terrains, TERRAINS_PER_OBSTACLE_CHUNK);
+  const province = PROVINCE_MAP[provinceId];
+  const buildingMap = new Map<string, PreparedPolygonObstacle>();
+  const urbanAreaMap = new Map<string, PreparedPolygonObstacle>();
+  const roadMap = new Map<string, PreparedLineObstacle>();
+  let warning: string | null = null;
+
+  reportProgress(
+    reporter,
+    `${province.name}: verifica edifici, urbanizzato e strade su ${terrainChunks.length} blocchi di terreni.`,
+  );
+
+  for (const [index, terrainChunk] of terrainChunks.entries()) {
+    reportProgress(
+      reporter,
+      `${province.name}: blocco filtri ${index + 1}/${terrainChunks.length} su ${terrainChunk.length} terreni.`,
+    );
+    const query = `
+[out:json][timeout:45];
+(
+${buildAroundStatementsForTerrains([{ key: "building" }], terrainChunk)}
+${buildAroundStatementsForTerrains(URBAN_AREA_SELECTORS, terrainChunk)}
+${buildAroundStatementsForTerrains(ROAD_SELECTORS, terrainChunk)}
+);
+out geom;
+`;
+
+    try {
+      const data = await fetchOverpass(
+        query,
+        reporter,
+        `${province.name} filtri blocco ${index + 1}/${terrainChunks.length}`,
+      );
+
+      for (const element of data.elements) {
+        if (element.type !== "way") {
+          continue;
+        }
+
+        const tags = element.tags ?? {};
+        const normalizedLanduse = tags.landuse?.trim().toLowerCase();
+        const normalizedHighway = tags.highway?.trim().toLowerCase();
+
+        if (tags.building) {
+          const prepared = preparePolygonObstacle(element);
+
+          if (prepared) {
+            buildingMap.set(prepared.id, prepared);
+          }
+        }
+
+        if (normalizedLanduse && EXCLUDED_URBAN_LANDUSES.has(normalizedLanduse)) {
+          const prepared = preparePolygonObstacle(element);
+
+          if (prepared) {
+            urbanAreaMap.set(prepared.id, prepared);
+          }
+        }
+
+        if (normalizedHighway) {
+          const prepared = prepareLineObstacle(element);
+
+          if (prepared) {
+            roadMap.set(prepared.id, prepared);
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof OverpassRateLimitError) {
+        warning = `${province.name}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${index + 1}/${terrainChunks.length}.`;
+        reportProgress(reporter, warning);
+        break;
+      }
+
+      throw error;
+    }
+  }
+
+  reportProgress(
+    reporter,
+    `${province.name}: contesto urbano raccolto ${buildingMap.size} edifici, ${urbanAreaMap.size} aree urbane e ${roadMap.size} strade.`,
+  );
+
+  return {
+    buildings: Array.from(buildingMap.values()),
+    urbanAreas: Array.from(urbanAreaMap.values()),
+    roads: Array.from(roadMap.values()),
+    warning,
+  };
+}
+
+function polygonHasInteriorOverlap(
+  terrainFeature: ReturnType<typeof polygon>,
+  terrainRing: CoordinateRing,
+  obstacle: PreparedPolygonObstacle,
+) {
+  return (
+    obstacle.ring.some((coordinate) =>
+      booleanPointInPolygon(point(coordinate), terrainFeature, { ignoreBoundary: true }),
+    ) ||
+    terrainRing.some((coordinate) =>
+      booleanPointInPolygon(point(coordinate), obstacle.feature, { ignoreBoundary: true }),
+    )
+  );
+}
+
+function roadTraversesTerrain(
+  terrainFeature: ReturnType<typeof polygon>,
+  terrainBoundary: ReturnType<typeof lineString>,
+  road: PreparedLineObstacle,
+) {
+  const roadIntersections = lineIntersect(road.feature, terrainBoundary).features.length;
+  const roadHasInteriorVertex = road.coords.some((coordinate) =>
+    booleanPointInPolygon(point(coordinate), terrainFeature, { ignoreBoundary: true }),
+  );
+
+  return roadHasInteriorVertex || roadIntersections >= 2;
+}
+
+function filterTerrainsByObstacles(
+  terrains: TerrainFeature[],
+  lookup: TerrainObstacleLookup,
+  reporter?: ProgressReporter,
+) {
+  const stats: TerrainFilterStats = {
+    rejectedByTags: 0,
+    rejectedByBuildings: 0,
+    rejectedByUrbanAreas: 0,
+    rejectedByRoads: 0,
+  };
+
+  const filtered = terrains.filter((terrain) => {
+    if (isTerrainHardExcluded(terrain.tags)) {
+      stats.rejectedByTags += 1;
+      return false;
+    }
+
+    try {
+      const terrainRing = terrain.coordinates;
+      const terrainBounds = boundsFromCoordinates(terrainRing);
+      const terrainFeature = polygon([terrainRing]);
+      const terrainBoundary = lineString(terrainRing);
+
+      const overlapsBuilding = lookup.buildings
+        .filter((building) => boundsOverlap(terrainBounds, building.bounds))
+        .some((building) => polygonHasInteriorOverlap(terrainFeature, terrainRing, building));
+
+      if (overlapsBuilding) {
+        stats.rejectedByBuildings += 1;
+        return false;
+      }
+
+      const overlapsUrbanArea = lookup.urbanAreas
+        .filter((urbanArea) => boundsOverlap(terrainBounds, urbanArea.bounds))
+        .some((urbanArea) => polygonHasInteriorOverlap(terrainFeature, terrainRing, urbanArea));
+
+      if (overlapsUrbanArea) {
+        stats.rejectedByUrbanAreas += 1;
+        return false;
+      }
+
+      let traversingMinorRoads = 0;
+
+      for (const road of lookup.roads) {
+        if (!boundsOverlap(terrainBounds, road.bounds)) {
+          continue;
+        }
+
+        if (!roadTraversesTerrain(terrainFeature, terrainBoundary, road)) {
+          continue;
+        }
+
+        if (MAJOR_ROAD_VALUES.has(road.tags.highway?.trim().toLowerCase() ?? "")) {
+          stats.rejectedByRoads += 1;
+          return false;
+        }
+
+        traversingMinorRoads += 1;
+
+        if (traversingMinorRoads >= 2) {
+          stats.rejectedByRoads += 1;
+          return false;
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  reportProgress(
+    reporter,
+    `Filtro qualità terreni: scartati ${stats.rejectedByTags} per tag incompatibili, ${stats.rejectedByBuildings} con edifici, ${stats.rejectedByUrbanAreas} in aree urbane e ${stats.rejectedByRoads} attraversati da strade.`,
+  );
+
+  return {
+    terrains: filtered,
+    stats,
+  };
 }
 
 async function fetchAgriculturalWaysNearSources(
@@ -658,6 +1059,11 @@ function computeTerrainCandidate(
     const poly = polygon([ring]);
     const centroid = centerOfMass(poly).geometry.coordinates;
     const tags = element.tags ?? {};
+
+    if (isTerrainHardExcluded(tags)) {
+      return null;
+    }
+
     const landuse = tags.landuse ?? "agricultural";
     const lats = ring.map((coordinate) => coordinate[1]);
     const lngs = ring.map((coordinate) => coordinate[0]);
@@ -748,9 +1154,27 @@ async function scanProvince(
     `${province.name}: calcolo prossimità terreno-fonte su ${terrainLookup.ways.length} poligoni.`,
   );
 
-  const terrains = terrainLookup.ways
+  const terrainCandidates = terrainLookup.ways
     .map((element) => computeTerrainCandidate(provinceId, element, sources))
     .filter((terrain): terrain is TerrainFeature => terrain !== null)
+    .sort((left, right) => left.distanceMeters - right.distanceMeters);
+
+  reportProgress(
+    reporter,
+    `${province.name}: terreni preliminari prima del filtro urbano ${terrainCandidates.length}.`,
+  );
+
+  const obstacleLookup = await fetchTerrainObstaclesForProvince(
+    provinceId,
+    terrainCandidates,
+    reporter,
+  );
+  const terrainFilter = filterTerrainsByObstacles(
+    terrainCandidates,
+    obstacleLookup,
+    reporter,
+  );
+  const terrains = terrainFilter.terrains
     .sort((left, right) => left.distanceMeters - right.distanceMeters);
 
   reportProgress(
@@ -761,7 +1185,9 @@ async function scanProvince(
   return {
     sources,
     terrains,
-    warnings: terrainLookup.warning ? [terrainLookup.warning] : [],
+    warnings: [terrainLookup.warning, obstacleLookup.warning].filter(
+      (warning): warning is string => Boolean(warning),
+    ),
   };
 }
 
