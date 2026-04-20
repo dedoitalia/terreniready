@@ -28,6 +28,10 @@ const TerrainMap = dynamic(() => import("@/components/terrain-map"), {
   ),
 });
 
+const LONG_SCAN_THRESHOLD_SECONDS = 180;
+const POLL_INTERVAL_MS = 1200;
+const EXTENDED_POLL_INTERVAL_MS = 2500;
+
 function toggleItem<T extends string>(list: T[], value: T) {
   return list.includes(value)
     ? list.filter((item) => item !== value)
@@ -293,6 +297,7 @@ export default function TerreniDashboard() {
 
   const latestLog = scanJob?.logs.at(-1);
   const warningCount = scanData?.meta.warnings.length ?? 0;
+  const isLongRunningScan = loading && loadingSeconds >= LONG_SCAN_THRESHOLD_SECONDS;
 
   useEffect(() => {
     if (!loading) {
@@ -335,7 +340,7 @@ export default function TerreniDashboard() {
 
           const startedAt = Date.now();
 
-          while (Date.now() - startedAt < 180_000) {
+          while (true) {
             const statusResponse = await fetch(`/api/scan/jobs/${jobId}`, {
               cache: "no-store",
             });
@@ -394,12 +399,12 @@ export default function TerreniDashboard() {
               );
             }
 
-            await sleep(1200);
+            await sleep(
+              Date.now() - startedAt >= LONG_SCAN_THRESHOLD_SECONDS * 1000
+                ? EXTENDED_POLL_INTERVAL_MS
+                : POLL_INTERVAL_MS,
+            );
           }
-
-          throw new Error(
-            "La scansione ha superato il tempo massimo. Riduci province o categorie e riprova.",
-          );
         } catch (scanError) {
           setError(
             scanError instanceof Error
@@ -715,7 +720,11 @@ export default function TerreniDashboard() {
               {loading ? (
                 <div className="mt-5 rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm leading-6 text-[#edf2e7]">
                   <div className="flex items-center justify-between gap-3">
-                    <span>Scansione live in esecuzione.</span>
+                    <span>
+                      {isLongRunningScan
+                        ? "Scansione estesa in monitoraggio."
+                        : "Scansione live in esecuzione."}
+                    </span>
                     <span className="font-mono text-xs">{loadingSeconds}s</span>
                   </div>
                   <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
@@ -727,10 +736,17 @@ export default function TerreniDashboard() {
                     />
                   </div>
                   <p className="mt-3 text-xs leading-5 text-[#c1d0be]">
-                    {selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
-                      ? "Con più province o categorie la pipeline può richiedere più tempo."
-                      : "Sto cercando fonti e terreni agricoli nel buffer selezionato."}
+                    {isLongRunningScan
+                      ? "Il job è ancora vivo sul server. Continuo a leggere i log e ad attendere il risultato, senza interrompere la scansione."
+                      : selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
+                        ? "Con più province o categorie la pipeline può richiedere più tempo."
+                        : "Sto cercando fonti e terreni agricoli nel buffer selezionato."}
                   </p>
+                  {latestLog ? (
+                    <p className="mt-2 rounded-2xl bg-black/12 px-3 py-2 text-xs leading-5 text-[#e5ede1]">
+                      Ultimo step: {latestLog.message}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
 
