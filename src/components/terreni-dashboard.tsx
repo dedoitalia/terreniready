@@ -36,6 +36,13 @@ type LiveScanState = {
   error: string | null;
 };
 
+type TerrainSortMode =
+  | "distance-asc"
+  | "comune-asc"
+  | "comune-desc"
+  | "area-desc"
+  | "area-asc";
+
 function toggleItem<T extends string>(list: T[], value: T) {
   return list.includes(value)
     ? list.filter((item) => item !== value)
@@ -117,6 +124,44 @@ function terrainMapUrl(terrain: TerrainFeature) {
     terrain.referenceUrl ??
     `https://www.google.com/maps?q=${terrain.center.lat.toFixed(6)},${terrain.center.lng.toFixed(6)}`
   );
+}
+
+function sourceComuneLabel(source: ScanResponse["sources"][number] | undefined) {
+  if (!source) {
+    return null;
+  }
+
+  const comune =
+    source.tags.comune?.trim() ||
+    source.tags["addr:city"]?.trim() ||
+    source.address?.split(",").at(-1)?.trim();
+
+  return comune || null;
+}
+
+function terrainComuneLabel(
+  terrain: TerrainFeature,
+  sourceById: Map<string, ScanResponse["sources"][number]>,
+) {
+  return (
+    sourceComuneLabel(sourceById.get(terrain.closestSourceId)) ??
+    PROVINCE_MAP[terrain.provinceId].name
+  );
+}
+
+function terrainSortLabel(sortMode: TerrainSortMode) {
+  switch (sortMode) {
+    case "comune-asc":
+      return "Comune A-Z";
+    case "comune-desc":
+      return "Comune Z-A";
+    case "area-desc":
+      return "Superficie maggiore";
+    case "area-asc":
+      return "Superficie minore";
+    default:
+      return "Vicinanza";
+  }
 }
 
 function escapeXml(value: string) {
@@ -311,6 +356,8 @@ export default function TerreniDashboard() {
   const [loading, setLoading] = useState(false);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [terrainSortMode, setTerrainSortMode] =
+    useState<TerrainSortMode>("distance-asc");
   const streamRef = useRef<EventSource | null>(null);
   const streamReconnectTimerRef = useRef<number | null>(null);
   const streamReconnectNoticeRef = useRef(false);
@@ -342,6 +389,29 @@ export default function TerreniDashboard() {
   const warningCount = scanData?.meta.warnings.length ?? 0;
   const noteCount = scanData?.meta.notes?.length ?? 0;
   const isLongRunningScan = loading && loadingSeconds >= LONG_SCAN_THRESHOLD_SECONDS;
+  const sourceById = new Map(
+    (scanData?.sources ?? []).map((source) => [source.id, source]),
+  );
+  const sortedTerrains = [...(scanData?.terrains ?? [])].sort((left, right) => {
+    switch (terrainSortMode) {
+      case "comune-asc":
+        return terrainComuneLabel(left, sourceById).localeCompare(
+          terrainComuneLabel(right, sourceById),
+          "it",
+        );
+      case "comune-desc":
+        return terrainComuneLabel(right, sourceById).localeCompare(
+          terrainComuneLabel(left, sourceById),
+          "it",
+        );
+      case "area-desc":
+        return (right.areaSqm ?? 0) - (left.areaSqm ?? 0);
+      case "area-asc":
+        return (left.areaSqm ?? 0) - (right.areaSqm ?? 0);
+      default:
+        return left.distanceMeters - right.distanceMeters;
+    }
+  });
 
   useEffect(() => {
     if (!loading) {
@@ -1186,16 +1256,35 @@ export default function TerreniDashboard() {
               <div>
                 <div className="terrain-keyline">Registro operativo</div>
                 <h2 className="mt-3 text-[2.1rem] font-semibold tracking-[-0.045em] text-[var(--foreground)]">
-                  Ledger dei terreni ordinati per vicinanza
+                  Ledger dei terreni
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
                   Ogni riga è una particella catastale con la sua fonte emissiva più
                   vicina. La selezione aggiorna la mappa e la scheda dossier.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex min-w-[220px] flex-col gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
+                    Ordina per
+                  </span>
+                  <select
+                    value={terrainSortMode}
+                    onChange={(event) =>
+                      setTerrainSortMode(event.target.value as TerrainSortMode)
+                    }
+                    className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.68)] px-4 py-3 text-sm font-medium text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.76)] outline-none transition focus:border-[rgba(44,66,49,0.28)]"
+                  >
+                    <option value="distance-asc">Distanza crescente</option>
+                    <option value="comune-asc">Comune A-Z</option>
+                    <option value="comune-desc">Comune Z-A</option>
+                    <option value="area-desc">Superficie decrescente</option>
+                    <option value="area-asc">Superficie crescente</option>
+                  </select>
+                </label>
                 <span className="terrain-chip">{selectedProvinceSummary}</span>
                 <span className="terrain-chip">{selectedCategorySummary}</span>
+                <span className="terrain-chip">{terrainSortLabel(terrainSortMode)}</span>
               </div>
             </div>
 
@@ -1204,6 +1293,7 @@ export default function TerreniDashboard() {
                 <thead>
                   <tr className="text-left text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
                     <th className="px-4 pb-1">Terreno</th>
+                    <th className="px-4 pb-1">Comune</th>
                     <th className="px-4 pb-1">Provincia</th>
                     <th className="px-4 pb-1">Uso</th>
                     <th className="px-4 pb-1">Distanza</th>
@@ -1215,7 +1305,7 @@ export default function TerreniDashboard() {
                   {(scanData?.terrains ?? []).length === 0 ? (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={7}
                         className="rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-5 py-8 text-center text-sm leading-6 text-[var(--muted)]"
                       >
                         Nessun terreno ancora presente. Avvia una scansione per
@@ -1223,7 +1313,7 @@ export default function TerreniDashboard() {
                       </td>
                     </tr>
                   ) : (
-                    (scanData?.terrains ?? []).map((terrain) => {
+                    sortedTerrains.map((terrain) => {
                       const active = terrain.id === activeTerrainId;
 
                       return (
@@ -1246,6 +1336,9 @@ export default function TerreniDashboard() {
                         >
                           <td className="rounded-l-[24px] px-4 py-4 font-semibold">
                             {terrain.name}
+                          </td>
+                          <td className="px-4 py-4">
+                            {terrainComuneLabel(terrain, sourceById)}
                           </td>
                           <td className="px-4 py-4">
                             {PROVINCE_MAP[terrain.provinceId].name}
