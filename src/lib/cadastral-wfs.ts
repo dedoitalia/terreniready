@@ -751,12 +751,14 @@ function computeTerrainFromParcel(
         continue;
       }
 
-      if (distanceMeters <= SEARCH_RADIUS_METERS) {
+      const normalizedDistance = Math.max(0, distanceMeters);
+
+      if (normalizedDistance <= SEARCH_RADIUS_METERS) {
         sourceCountInRange += 1;
       }
 
-      if (distanceMeters < closestDistance) {
-        closestDistance = distanceMeters;
+      if (normalizedDistance < closestDistance) {
+        closestDistance = normalizedDistance;
         closestSource = source;
       }
     }
