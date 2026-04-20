@@ -31,6 +31,7 @@ const OVERPASS_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
 const SOURCES_PER_AGRI_CHUNK = 18;
+const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
 
 type OverpassElement = {
   type: "node" | "way";
@@ -207,17 +208,28 @@ async function fetchOverpass(
           reporter,
           `${contextLabel ?? "Query"}: interrogo ${new URL(endpoint).hostname}.`,
         );
-        const response = await fetch(endpoint, {
-          method: "POST",
-          cache: "no-store",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "text/plain;charset=UTF-8",
-            "User-Agent":
-              "TerreniReady/0.1 (+https://terreniready.onrender.com; repo:https://github.com/dedoitalia/terreniready)",
-          },
-          body: query,
-        });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+        }, OVERPASS_REQUEST_TIMEOUT_MS);
+        let response: Response;
+
+        try {
+          response = await fetch(endpoint, {
+            method: "POST",
+            cache: "no-store",
+            signal: controller.signal,
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "text/plain;charset=UTF-8",
+              "User-Agent":
+                "TerreniReady/0.1 (+https://terreniready.onrender.com; repo:https://github.com/dedoitalia/terreniready)",
+            },
+            body: query,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         if (response.status === 429) {
           sawRateLimit = true;
@@ -236,6 +248,10 @@ async function fetchOverpass(
 
         if (!response.ok) {
           lastError = new Error(`${endpoint} responded with ${response.status}`);
+          reportProgress(
+            reporter,
+            `${contextLabel ?? "Query"}: ${new URL(endpoint).hostname} ha risposto ${response.status}, provo il prossimo endpoint.`,
+          );
           continue;
         }
 
@@ -253,8 +269,29 @@ async function fetchOverpass(
 
         return json;
       } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          endpointCooldowns.set(
+            endpoint,
+            Date.now() + DEFAULT_ENDPOINT_COOLDOWN_MS,
+          );
+          lastError = new Error(`${endpoint} timed out after ${OVERPASS_REQUEST_TIMEOUT_MS}ms`);
+          reportProgress(
+            reporter,
+            `${contextLabel ?? "Query"}: ${new URL(endpoint).hostname} non ha risposto entro ${Math.round(OVERPASS_REQUEST_TIMEOUT_MS / 1000)}s, provo il prossimo endpoint.`,
+          );
+          continue;
+        }
+
+        endpointCooldowns.set(
+          endpoint,
+          Date.now() + DEFAULT_ENDPOINT_COOLDOWN_MS,
+        );
         lastError =
           error instanceof Error ? error : new Error("Unknown Overpass error");
+        reportProgress(
+          reporter,
+          `${contextLabel ?? "Query"}: errore rete su ${new URL(endpoint).hostname}, provo il prossimo endpoint.`,
+        );
       }
     }
 
