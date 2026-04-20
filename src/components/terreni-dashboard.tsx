@@ -105,6 +105,13 @@ function appendLogEntry(
   };
 }
 
+function createLogEntry(message: string): ScanJobLogEntry {
+  return {
+    timestamp: new Date().toISOString(),
+    message,
+  };
+}
+
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
@@ -225,6 +232,8 @@ export default function TerreniDashboard() {
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<EventSource | null>(null);
+  const streamReconnectTimerRef = useRef<number | null>(null);
+  const streamReconnectNoticeRef = useRef(false);
 
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
@@ -268,9 +277,22 @@ export default function TerreniDashboard() {
 
   useEffect(() => {
     return () => {
+      if (streamReconnectTimerRef.current) {
+        window.clearTimeout(streamReconnectTimerRef.current);
+      }
+
       streamRef.current?.close();
     };
   }, []);
+
+  function clearStreamReconnectWatchdog() {
+    if (streamReconnectTimerRef.current) {
+      window.clearTimeout(streamReconnectTimerRef.current);
+      streamReconnectTimerRef.current = null;
+    }
+
+    streamReconnectNoticeRef.current = false;
+  }
 
   async function runScan() {
     if (selectedProvinceIds.length === 0) {
@@ -291,6 +313,7 @@ export default function TerreniDashboard() {
       logs: [],
       error: null,
     });
+    clearStreamReconnectWatchdog();
 
     streamRef.current?.close();
     const eventSource = new EventSource(
@@ -303,7 +326,28 @@ export default function TerreniDashboard() {
         streamRef.current = null;
       }
 
+      clearStreamReconnectWatchdog();
       eventSource.close();
+    };
+
+    eventSource.onopen = () => {
+      if (streamRef.current !== eventSource) {
+        return;
+      }
+
+      const hadReconnectNotice = streamReconnectNoticeRef.current;
+      clearStreamReconnectWatchdog();
+
+      if (hadReconnectNotice) {
+        setScanJob((current) =>
+          appendLogEntry(
+            current,
+            createLogEntry(
+              "Connessione live ristabilita, continuo a seguire la scansione.",
+            ),
+          ),
+        );
+      }
     };
 
     eventSource.addEventListener("log", (event) => {
@@ -381,8 +425,51 @@ export default function TerreniDashboard() {
         return;
       }
 
+      if (eventSource.readyState === EventSource.CONNECTING) {
+        if (!streamReconnectNoticeRef.current) {
+          streamReconnectNoticeRef.current = true;
+          setScanJob((current) =>
+            appendLogEntry(
+              current,
+              createLogEntry(
+                "Connessione live instabile, provo a ristabilire il flusso senza perdere la scansione.",
+              ),
+            ),
+          );
+        }
+
+        if (streamReconnectTimerRef.current) {
+          window.clearTimeout(streamReconnectTimerRef.current);
+        }
+
+        streamReconnectTimerRef.current = window.setTimeout(() => {
+          if (streamRef.current !== eventSource) {
+            return;
+          }
+
+          if (eventSource.readyState === EventSource.OPEN) {
+            return;
+          }
+
+          const message =
+            "La connessione live resta instabile da troppo tempo. Riprova tra pochi secondi.";
+
+          setError(message);
+          setLoading(false);
+          setLoadingSeconds(0);
+          setScanJob((current) => ({
+            status: "failed",
+            error: message,
+            logs: current?.logs ?? [],
+          }));
+          closeCurrentStream();
+        }, 15_000);
+
+        return;
+      }
+
       const message =
-        "La connessione live con il motore di scansione si è interrotta. Riprova.";
+        "La connessione live con il motore di scansione si è chiusa prima del risultato. Riprova.";
 
       setError(message);
       setLoading(false);

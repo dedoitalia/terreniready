@@ -174,6 +174,10 @@ const scanResultCache = getGlobalStore<Map<string, CachedScanResult>>(
   "__terreniReadyScanResultCache",
   () => new Map(),
 );
+const scanInflight = getGlobalStore<Map<string, Promise<ScanResponse>>>(
+  "__terreniReadyScanInflight",
+  () => new Map(),
+);
 
 function getGlobalStore<T>(key: string, init: () => T) {
   const globalScope = globalThis as Record<string, unknown>;
@@ -1326,96 +1330,118 @@ export async function runScan(
     return cloneScanResponse(cachedScanResult.value);
   }
 
-  reportProgress(
-    reporter,
-    `Scansione avviata su ${provinces.length} province e ${categories.length} categorie.`,
-  );
+  const inflightScan = scanInflight.get(scanCacheKey);
 
-  try {
-    const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
-
-    for (const provinceId of provinces) {
-      provinceResults.push(await scanProvince(provinceId, categories, reporter));
-    }
-
-    const sources = provinceResults
-      .flatMap((result) => result.sources)
-      .sort((left, right) => left.name.localeCompare(right.name, "it"));
-
-    const terrains = provinceResults
-      .flatMap((result) => result.terrains)
-      .sort((left, right) => left.distanceMeters - right.distanceMeters);
-    warnings.push(...provinceResults.flatMap((result) => result.warnings));
-
-    if (terrains.length > MAX_TERRAINS) {
-      warnings.push(
-        `Mostro i primi ${MAX_TERRAINS} terreni ordinati per prossimità. Raffina le province per un set più mirato.`,
-      );
-    }
-
-    if (sources.length === 0) {
-      warnings.push(
-        `Nessuna fonte OSM trovata nelle province selezionate. Prova con ${provinceName("FI")}, ${provinceName("PI")} o ${provinceName("PT")}.`,
-      );
-    }
-
-    if (sources.length > 0 && terrains.length === 0) {
-      warnings.push(
-        "Le fonti sono state trovate, ma non sono emersi poligoni agricoli OSM entro 350 m nel set corrente.",
-      );
-    }
-
-    if (overpassCache.size > 0) {
-      warnings.push(
-        "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
-      );
-    }
-
+  if (inflightScan) {
     reportProgress(
       reporter,
-      `Scansione completata: ${sources.length} fonti e ${Math.min(terrains.length, MAX_TERRAINS)} terreni restituiti.`,
+      "Riprendo una scansione identica gia in esecuzione senza riaprire una nuova pipeline.",
+    );
+    return cloneScanResponse(await inflightScan);
+  }
+
+  const scanPromise = (async () => {
+    reportProgress(
+      reporter,
+      `Scansione avviata su ${provinces.length} province e ${categories.length} categorie.`,
     );
 
-    const result = {
-      sources,
-      terrains: terrains.slice(0, MAX_TERRAINS),
-      meta: {
-        queryAt: new Date().toISOString(),
-        radiusMeters: SEARCH_RADIUS_METERS,
-        selectedProvinceIds: provinces,
-        selectedCategoryIds: categories,
-        totalSources: sources.length,
-        totalTerrains: terrains.length,
-        warnings,
-      },
-    } satisfies ScanResponse;
+    try {
+      const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
 
-    scanResultCache.set(scanCacheKey, {
-      expiresAt: Date.now() + SCAN_RESULT_CACHE_TTL_MS,
-      value: cloneScanResponse(result),
-    });
+      for (const provinceId of provinces) {
+        provinceResults.push(await scanProvince(provinceId, categories, reporter));
+      }
 
-    return result;
-  } catch (error) {
-    if (
-      cachedScanResult?.value &&
-      isRecoverableOverpassError(error)
-    ) {
+      const sources = provinceResults
+        .flatMap((result) => result.sources)
+        .sort((left, right) => left.name.localeCompare(right.name, "it"));
+
+      const terrains = provinceResults
+        .flatMap((result) => result.terrains)
+        .sort((left, right) => left.distanceMeters - right.distanceMeters);
+      warnings.push(...provinceResults.flatMap((result) => result.warnings));
+
+      if (terrains.length > MAX_TERRAINS) {
+        warnings.push(
+          `Mostro i primi ${MAX_TERRAINS} terreni ordinati per prossimità. Raffina le province per un set più mirato.`,
+        );
+      }
+
+      if (sources.length === 0) {
+        warnings.push(
+          `Nessuna fonte OSM trovata nelle province selezionate. Prova con ${provinceName("FI")}, ${provinceName("PI")} o ${provinceName("PT")}.`,
+        );
+      }
+
+      if (sources.length > 0 && terrains.length === 0) {
+        warnings.push(
+          "Le fonti sono state trovate, ma non sono emersi poligoni agricoli OSM entro 350 m nel set corrente.",
+        );
+      }
+
+      if (overpassCache.size > 0) {
+        warnings.push(
+          "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
+        );
+      }
+
       reportProgress(
         reporter,
-        "Le sorgenti pubbliche sono sature: restituisco l'ultimo risultato utile disponibile da cache.",
+        `Scansione completata: ${sources.length} fonti e ${Math.min(terrains.length, MAX_TERRAINS)} terreni restituiti.`,
       );
 
-      const cachedResult = cloneScanResponse(cachedScanResult.value);
-      cachedResult.meta.queryAt = new Date().toISOString();
-      cachedResult.meta.warnings = [
-        "Risultato restituito da cache precedente perché Overpass è temporaneamente saturo.",
-        ...cachedResult.meta.warnings,
-      ];
+      const result = {
+        sources,
+        terrains: terrains.slice(0, MAX_TERRAINS),
+        meta: {
+          queryAt: new Date().toISOString(),
+          radiusMeters: SEARCH_RADIUS_METERS,
+          selectedProvinceIds: provinces,
+          selectedCategoryIds: categories,
+          totalSources: sources.length,
+          totalTerrains: terrains.length,
+          warnings,
+        },
+      } satisfies ScanResponse;
 
-      return cachedResult;
+      scanResultCache.set(scanCacheKey, {
+        expiresAt: Date.now() + SCAN_RESULT_CACHE_TTL_MS,
+        value: cloneScanResponse(result),
+      });
+
+      return result;
+    } catch (error) {
+      if (
+        cachedScanResult?.value &&
+        isRecoverableOverpassError(error)
+      ) {
+        reportProgress(
+          reporter,
+          "Le sorgenti pubbliche sono sature: restituisco l'ultimo risultato utile disponibile da cache.",
+        );
+
+        const cachedResult = cloneScanResponse(cachedScanResult.value);
+        cachedResult.meta.queryAt = new Date().toISOString();
+        cachedResult.meta.warnings = [
+          "Risultato restituito da cache precedente perché Overpass è temporaneamente saturo.",
+          ...cachedResult.meta.warnings,
+        ];
+
+        return cachedResult;
+      }
+
+      throw error;
     }
+  })();
 
-    throw error;
+  scanInflight.set(scanCacheKey, scanPromise);
+
+  try {
+    return cloneScanResponse(await scanPromise);
+  } finally {
+    if (scanInflight.get(scanCacheKey) === scanPromise) {
+      scanInflight.delete(scanCacheKey);
+    }
   }
 }
