@@ -5,11 +5,15 @@ import JSZip from "jszip";
 import { startTransition, useEffect, useState } from "react";
 
 import { PROVINCES, PROVINCE_MAP } from "@/lib/province-data";
-import { SOURCE_CATEGORIES, SOURCE_CATEGORY_MAP, landuseLabel } from "@/lib/source-types";
+import {
+  SOURCE_CATEGORIES,
+  SOURCE_CATEGORY_MAP,
+  landuseLabel,
+} from "@/lib/source-types";
 import type {
+  ProvinceId,
   ScanJobCreateResponse,
   ScanJobSnapshot,
-  ProvinceId,
   ScanResponse,
   SourceCategoryId,
   TerrainFeature,
@@ -18,8 +22,8 @@ import type {
 const TerrainMap = dynamic(() => import("@/components/terrain-map"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[62vh] items-center justify-center rounded-[28px] border border-white/60 bg-[#dce6db] text-sm text-[#2d4635] shadow-[0_30px_80px_rgba(28,39,31,0.16)] lg:h-[calc(100vh-12rem)]">
-      Carico la mappa territoriale...
+    <div className="terrain-shell flex h-[62vh] items-center justify-center rounded-[30px] px-6 text-sm text-[var(--muted-strong)] lg:h-[calc(100vh-12rem)]">
+      Carico l&apos;atlante operativo territoriale...
     </div>
   ),
 });
@@ -121,7 +125,9 @@ function terrainPlacemark(terrain: TerrainFeature) {
         Provincia: ${PROVINCE_MAP[terrain.provinceId].name}<br/>
         Uso: ${landuseLabel(terrain.landuse)}<br/>
         Distanza: ${Math.round(terrain.distanceMeters)} m<br/>
-        Superficie: ${terrain.areaSqm ? terrain.areaSqm.toLocaleString("it-IT") : "n.d."} m²<br/>
+        Superficie: ${
+          terrain.areaSqm ? terrain.areaSqm.toLocaleString("it-IT") : "n.d."
+        } m²<br/>
         Fonte: ${terrain.closestSourceName}
       ]]></description>
       <Style>
@@ -155,12 +161,12 @@ async function downloadKmz(data: ScanResponse) {
 }
 
 export default function TerreniDashboard() {
-  const [selectedProvinceIds, setSelectedProvinceIds] = useState<ProvinceId[]>(["PT"]);
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<SourceCategoryId[]>([
-    "fuel",
-    "bodyshop",
-    "repair",
+  const [selectedProvinceIds, setSelectedProvinceIds] = useState<ProvinceId[]>([
+    "PT",
   ]);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<SourceCategoryId[]>(
+    ["fuel", "bodyshop", "repair"],
+  );
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const [scanJob, setScanJob] = useState<ScanJobSnapshot | null>(null);
   const [activeTerrainId, setActiveTerrainId] = useState<string>();
@@ -171,6 +177,21 @@ export default function TerreniDashboard() {
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
   );
+
+  const selectedProvinceSummary =
+    selectedProvinceIds.length > 0
+      ? selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].name).join(" · ")
+      : "Nessuna provincia selezionata";
+
+  const selectedCategorySummary =
+    selectedCategoryIds.length > 0
+      ? selectedCategoryIds
+          .map((categoryId) => SOURCE_CATEGORY_MAP[categoryId].label)
+          .join(" · ")
+      : "Nessuna categoria selezionata";
+
+  const latestLog = scanJob?.logs.at(-1);
+  const warningCount = scanData?.meta.warnings.length ?? 0;
 
   useEffect(() => {
     if (!loading) {
@@ -296,112 +317,266 @@ export default function TerreniDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#f5f0d7_0%,#eef2ea_34%,#e4ebdf_100%)] text-[#142015]">
-      <div className="mx-auto flex max-w-[1600px] flex-col gap-8 px-5 py-6 lg:px-8 lg:py-8">
-        <section className="grid gap-6 lg:grid-cols-[420px_minmax(0,1fr)]">
-          <aside className="rounded-[32px] border border-white/70 bg-white/78 p-6 shadow-[0_25px_70px_rgba(26,34,26,0.1)] backdrop-blur">
-            <div className="space-y-3">
-              <span className="inline-flex rounded-full bg-[#1d3826] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#eef5df]">
-                TerreniReady
-              </span>
-              <h1 className="max-w-sm text-4xl font-semibold tracking-[-0.04em] text-[#162118]">
-                SaaS geospaziale per scovare terreni agricoli vicini a fonti emissive.
-              </h1>
-              <p className="text-sm leading-6 text-[#4a5d4a]">
-                Questo MVP usa dati reali OpenStreetMap per le fonti e i poligoni agricoli,
-                con overlay WMS ufficiale dell&apos;Agenzia delle Entrate per le particelle catastali.
-              </p>
+    <div className="relative min-h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+      >
+        <div className="absolute left-[-14rem] top-[-10rem] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,rgba(214,192,103,0.38),transparent_72%)] blur-3xl" />
+        <div className="absolute right-[-8rem] top-[10rem] h-[28rem] w-[28rem] rounded-full bg-[radial-gradient(circle,rgba(76,108,81,0.22),transparent_70%)] blur-3xl" />
+        <div className="absolute bottom-[-12rem] left-[20%] h-[26rem] w-[26rem] rounded-full bg-[radial-gradient(circle,rgba(150,114,86,0.14),transparent_72%)] blur-3xl" />
+      </div>
+
+      <div className="relative z-10 mx-auto flex max-w-[1680px] flex-col gap-6 px-4 py-4 sm:px-6 lg:px-8 lg:py-8">
+        <header className="terrain-shell terrain-shell-hero px-6 py-6 lg:px-8 lg:py-8">
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.22fr)_360px] xl:items-end">
+            <div className="space-y-5">
+              <div className="terrain-keyline terrain-keyline-dark">
+                TerreniReady / land intelligence suite
+              </div>
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px] lg:items-end">
+                <div>
+                  <h1 className="max-w-5xl text-[clamp(2.85rem,5vw,5.35rem)] font-semibold leading-[0.94] tracking-[-0.055em] text-[#f6f2e8]">
+                    Un atlante operativo per leggere territorio, particelle e
+                    prossimità emissiva come un unico dossier.
+                  </h1>
+                  <p className="mt-5 max-w-3xl text-base leading-7 text-[#d8e3d4] lg:text-lg">
+                    Ho ricostruito il SaaS intorno alla filosofia già presente nel
+                    prodotto: cartografia, agricoltura, catasto e analisi fondiaria.
+                    Il risultato è una control room più netta, più editoriale e più
+                    coerente in tutte le sue superfici.
+                  </p>
+                </div>
+                <div className="rounded-[28px] border border-white/10 bg-white/6 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur">
+                  <div className="terrain-keyline terrain-keyline-dark">
+                    Workflow
+                  </div>
+                  <div className="mt-4 space-y-3 text-sm leading-6 text-[#e5eee0]">
+                    <p>1. Selezione geografica delle province target.</p>
+                    <p>2. Interrogazione live delle fonti emissive pubbliche.</p>
+                    <p>3. Matching spaziale dei terreni agricoli nel buffer.</p>
+                    <p>4. Lettura in mappa, tabella ed export del dossier.</p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <span className="terrain-chip terrain-chip-dark">
+                  OpenStreetMap live scan
+                </span>
+                <span className="terrain-chip terrain-chip-dark">
+                  Overlay catastale WMS ufficiale
+                </span>
+                <span className="terrain-chip terrain-chip-dark">
+                  Raggio operativo 350 m
+                </span>
+                <span className="terrain-chip terrain-chip-dark">
+                  Export CSV + KMZ
+                </span>
+              </div>
             </div>
 
-            <div className="mt-8 space-y-6">
-              <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-[#445646]">
-                    Province toscane
+            <div className="grid gap-4">
+              <div className="rounded-[30px] border border-white/10 bg-black/12 p-5 backdrop-blur">
+                <div className="terrain-keyline terrain-keyline-dark">
+                  Filosofia del tema
+                </div>
+                <h2 className="mt-4 text-2xl font-semibold tracking-[-0.04em] text-white">
+                  Territorio come tavolo operativo
+                </h2>
+                <p className="mt-3 text-sm leading-6 text-[#dde6d8]">
+                  Il linguaggio grafico adesso unisce ledger tecnico, mappa
+                  satellitare, griglia catastale e scheda asset, così ogni gesto
+                  dell&apos;utente resta dentro una narrativa unica: analizzare,
+                  verificare e shortlistare.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
+                    Province live
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-white">
+                    {selectedProvinceIds.length}
+                  </div>
+                </div>
+                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
+                    Fonti monitorate
+                  </div>
+                  <div className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-white">
+                    {selectedCategoryIds.length}
+                  </div>
+                </div>
+                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
+                    Stato scan
+                  </div>
+                  <div className="mt-3 text-sm font-medium leading-6 text-[#edf2e7]">
+                    {loading
+                      ? `In corso da ${loadingSeconds}s`
+                      : scanJob?.status === "completed"
+                        ? "Ultima scansione completata"
+                        : scanJob?.status === "failed"
+                          ? "Ultima scansione fallita"
+                          : "Pronto al lancio"}
+                  </div>
+                </div>
+                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
+                    Ultimo log
+                  </div>
+                  <div className="mt-3 text-sm font-medium leading-6 text-[#edf2e7]">
+                    {latestLog?.message ?? "Nessuna esecuzione ancora registrata"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <main className="grid gap-6 xl:grid-cols-[410px_minmax(0,1fr)]">
+          <aside className="space-y-5">
+            <section className="terrain-shell p-5 lg:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="terrain-keyline">Mission control</div>
+                  <h2 className="mt-3 text-[2rem] font-semibold tracking-[-0.045em] text-[var(--foreground)]">
+                    Radar territoriale
                   </h2>
-                  <span className="text-xs text-[#6d7f6f]">
-                    {selectedProvinceIds.length} selezionate
-                  </span>
+                  <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)]">
+                    Qui si imposta il perimetro operativo del dossier: provincia,
+                    tipologia emissiva e azioni di scansione o export.
+                  </p>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {PROVINCES.map((province) => {
-                    const checked = selectedProvinceIds.includes(province.id);
-
-                    return (
-                      <button
-                        key={province.id}
-                        type="button"
-                        onClick={() =>
-                          setSelectedProvinceIds((current) =>
-                            toggleItem(current, province.id),
-                          )
-                        }
-                        className={`rounded-2xl border px-3 py-3 text-left text-sm transition ${
-                          checked
-                            ? "border-[#1d3826] bg-[#1d3826] text-white"
-                            : "border-[#d8dfd1] bg-[#f8faf5] text-[#243326] hover:border-[#91a384]"
-                        }`}
-                      >
-                        <div className="font-semibold">{province.name}</div>
-                        <div className="mt-1 text-xs opacity-80">{province.id}</div>
-                      </button>
-                    );
-                  })}
+                <div className="rounded-[22px] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-4 py-3 text-right shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+                  <div className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--muted)]">
+                    Buffer
+                  </div>
+                  <div className="mt-1 font-mono text-sm text-[var(--foreground)]">
+                    350 m
+                  </div>
                 </div>
-              </section>
+              </div>
 
-              <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-[#445646]">
-                    Fonti emissive
-                  </h2>
-                  <span className="text-xs text-[#6d7f6f]">
-                    {selectedCategoryIds.length} tipi
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {SOURCE_CATEGORIES.map((category) => {
-                    const checked = selectedCategoryIds.includes(category.id);
+              <div className="mt-7 space-y-7">
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="terrain-keyline">Ambito geografico</div>
+                      <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                        Province toscane
+                      </h3>
+                    </div>
+                    <span className="rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-strong)]">
+                      {selectedProvinceIds.length} attive
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {PROVINCES.map((province) => {
+                      const checked = selectedProvinceIds.includes(province.id);
 
-                    return (
-                      <button
-                        key={category.id}
-                        type="button"
-                        onClick={() =>
-                          setSelectedCategoryIds((current) =>
-                            toggleItem(current, category.id),
-                          )
-                        }
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                          checked
-                            ? "border-[#132017] bg-[#eef3e0]"
-                            : "border-[#d8dfd1] bg-white hover:border-[#91a384]"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span
-                            className="h-3 w-3 rounded-full"
-                            style={{ backgroundColor: category.color }}
-                          />
-                          <div>
-                            <div className="font-semibold text-[#1e2c21]">{category.label}</div>
-                            <p className="text-xs leading-5 text-[#607260]">
-                              {category.description}
-                            </p>
+                      return (
+                        <button
+                          key={province.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedProvinceIds((current) =>
+                              toggleItem(current, province.id),
+                            )
+                          }
+                          className={`rounded-[22px] border px-4 py-3 text-left transition ${
+                            checked
+                              ? "border-[rgba(17,31,21,0.12)] bg-[linear-gradient(135deg,#1a2b1d,#304735)] text-white shadow-[0_18px_35px_rgba(18,27,19,0.2)]"
+                              : "border-[var(--line)] bg-[rgba(255,255,255,0.55)] text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] hover:border-[rgba(44,66,49,0.22)] hover:bg-[rgba(255,255,255,0.78)]"
+                          }`}
+                        >
+                          <div className="font-semibold">{province.name}</div>
+                          <div
+                            className={`mt-1 text-xs ${
+                              checked ? "text-[#c9d6c4]" : "text-[var(--muted)]"
+                            }`}
+                          >
+                            {province.id}
                           </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="terrain-keyline">Sorgenti</div>
+                      <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                        Fonti emissive
+                      </h3>
+                    </div>
+                    <span className="rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-strong)]">
+                      {selectedCategoryIds.length} tipi
+                    </span>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {SOURCE_CATEGORIES.map((category) => {
+                      const checked = selectedCategoryIds.includes(category.id);
+
+                      return (
+                        <button
+                          key={category.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedCategoryIds((current) =>
+                              toggleItem(current, category.id),
+                            )
+                          }
+                          className={`w-full rounded-[24px] border p-4 text-left transition ${
+                            checked
+                              ? "border-[rgba(17,31,21,0.08)] bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(231,236,223,0.96))] shadow-[0_18px_35px_rgba(25,33,24,0.08)]"
+                              : "border-[var(--line)] bg-[rgba(255,255,255,0.5)] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] hover:bg-[rgba(255,255,255,0.74)]"
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span
+                              className="mt-1 h-3.5 w-3.5 rounded-full ring-4 ring-white/60"
+                              style={{ backgroundColor: category.color }}
+                            />
+                            <div>
+                              <div className="font-semibold text-[var(--foreground)]">
+                                {category.label}
+                              </div>
+                              <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+                                {category.description}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            </section>
+
+            <section className="terrain-shell terrain-shell-dark p-5 lg:p-6">
+              <div className="terrain-keyline terrain-keyline-dark">
+                Scan engine
+              </div>
+              <h2 className="mt-3 text-[1.85rem] font-semibold tracking-[-0.04em] text-white">
+                Lancia la ricognizione
+              </h2>
+              <p className="mt-3 text-sm leading-6 text-[#cfdbcb]">
+                La scansione interroga le fonti pubbliche, costruisce il buffer
+                spaziale e rientra con il set dei terreni agricoli rilevati.
+              </p>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
                 <button
                   type="button"
                   onClick={runScan}
                   disabled={loading}
-                  className="rounded-2xl bg-[#15251a] px-4 py-4 text-sm font-semibold text-white transition hover:bg-[#223528] disabled:cursor-wait disabled:opacity-70"
+                  className="terrain-button-primary"
                 >
                   {loading ? "Scansione in corso..." : "Avvia scansione reale"}
                 </button>
@@ -419,140 +594,265 @@ export default function TerreniDashboard() {
                     );
                   }}
                   disabled={!scanData || scanData.terrains.length === 0}
-                  className="rounded-2xl border border-[#d7decf] bg-white px-4 py-4 text-sm font-semibold text-[#1e2d20] transition hover:border-[#91a384] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="terrain-button-secondary terrain-button-secondary-dark"
                 >
                   Export CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!scanData || scanData.terrains.length === 0) {
+                      return;
+                    }
+
+                    void downloadKmz(scanData);
+                  }}
+                  disabled={!scanData || scanData.terrains.length === 0}
+                  className="terrain-button-secondary terrain-button-secondary-dark sm:col-span-2 xl:col-span-1"
+                >
+                  Export KMZ
                 </button>
               </div>
 
               {loading ? (
-                <div className="rounded-[24px] border border-[#d8dfd1] bg-[#f8faf5] p-4 text-sm leading-6 text-[#415441]">
-                  Scansione reale in corso da {loadingSeconds}s.
-                  {selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
-                    ? " Con piu province o categorie puo richiedere 20-60 secondi."
-                    : " Sto interrogando OpenStreetMap e calcolando i poligoni agricoli nel buffer dei 350 metri."}
+                <div className="mt-5 rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm leading-6 text-[#edf2e7]">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Scansione live in esecuzione.</span>
+                    <span className="font-mono text-xs">{loadingSeconds}s</span>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
+                    <div
+                      className="h-full rounded-full bg-[linear-gradient(90deg,#d6c46f,#8ea76a)] transition-[width]"
+                      style={{
+                        width: `${Math.min(92, Math.max(12, loadingSeconds * 3))}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-[#c1d0be]">
+                    {selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
+                      ? "Con più province o categorie la pipeline può richiedere più tempo."
+                      : "Sto cercando fonti e terreni agricoli nel buffer selezionato."}
+                  </p>
                 </div>
               ) : null}
 
-              {scanJob ? (
-                <div className="rounded-[24px] border border-[#d8dfd1] bg-[#f8faf5] p-4">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-[#233525]">
+              {error ? (
+                <div className="mt-5 rounded-[24px] border border-[rgba(235,140,123,0.25)] bg-[rgba(176,72,56,0.18)] px-4 py-4 text-sm leading-6 text-[#ffe3db]">
+                  {error}
+                </div>
+              ) : null}
+            </section>
+
+            {scanJob ? (
+              <section className="terrain-shell p-5 lg:p-6">
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <div className="terrain-keyline">Timeline</div>
+                    <h2 className="mt-3 text-[1.8rem] font-semibold tracking-[-0.04em] text-[var(--foreground)]">
                       Log scansione
-                    </div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-[#627462]">
-                      {scanJob.status}
-                    </div>
+                    </h2>
                   </div>
-                  <div className="max-h-56 space-y-2 overflow-auto rounded-2xl bg-white p-3 font-mono text-xs leading-5 text-[#405140]">
+                  <span className="rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.65)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-strong)]">
+                    {scanJob.status}
+                  </span>
+                </div>
+
+                <div className="mt-5 max-h-72 overflow-auto rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.56)] p-4">
+                  <div className="relative space-y-4 border-l border-[rgba(28,43,30,0.12)] pl-4">
                     {scanJob.logs.map((entry) => (
-                      <div key={`${entry.timestamp}-${entry.message}`}>
-                        <span className="text-[#7a8b7a]">
+                      <div key={`${entry.timestamp}-${entry.message}`} className="relative">
+                        <span className="absolute -left-[1.15rem] top-1.5 h-2.5 w-2.5 rounded-full bg-[var(--accent-strong)] ring-4 ring-[rgba(255,255,255,0.7)]" />
+                        <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">
                           {new Date(entry.timestamp).toLocaleTimeString("it-IT")}
-                        </span>{" "}
-                        {entry.message}
+                        </div>
+                        <div className="mt-1 text-sm leading-6 text-[var(--muted-strong)]">
+                          {entry.message}
+                        </div>
                       </div>
                     ))}
                   </div>
                 </div>
-              ) : null}
+              </section>
+            ) : null}
 
-              <button
-                type="button"
-                onClick={() => {
-                  if (!scanData || scanData.terrains.length === 0) {
-                    return;
-                  }
-
-                  void downloadKmz(scanData);
-                }}
-                disabled={!scanData || scanData.terrains.length === 0}
-                className="w-full rounded-2xl border border-[#d7decf] bg-[#f7f9f3] px-4 py-4 text-sm font-semibold text-[#1e2d20] transition hover:border-[#91a384] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Export KMZ
-              </button>
-
-              <div className="rounded-[24px] bg-[#f6f8f1] p-4 text-xs leading-6 text-[#516351]">
-                Proprietari, nomi e codici fiscali non sono inclusi in questo MVP: servono
-                accessi catastali dedicati o integrazioni convenzionate. Qui la pipeline è reale
-                su dati pubblici, non simulata.
-              </div>
-            </div>
+            <section className="terrain-shell p-5 lg:p-6">
+              <div className="terrain-keyline">Compliance note</div>
+              <h2 className="mt-3 text-[1.6rem] font-semibold tracking-[-0.04em] text-[var(--foreground)]">
+                Stato del dataset
+              </h2>
+              <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                In questa versione la pipeline usa solo dati pubblici reali. I
+                proprietari, i nomi e i codici fiscali non sono presenti: per quel
+                livello serve una connessione catastale convenzionata.
+              </p>
+            </section>
           </aside>
 
-          <div className="space-y-6">
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-[28px] border border-white/70 bg-white/75 p-5 shadow-[0_20px_55px_rgba(26,34,26,0.08)] backdrop-blur">
-                <div className="text-xs uppercase tracking-[0.18em] text-[#6d7f6f]">
-                  Fonti trovate
-                </div>
-                <div className="mt-3 text-4xl font-semibold tracking-[-0.04em]">
+          <section className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="terrain-stat-card">
+                <div className="terrain-keyline">Fonti intercettate</div>
+                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
                   {scanData?.meta.totalSources ?? 0}
                 </div>
+                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                  POI emissivi rilevati nelle province correnti.
+                </p>
               </div>
-              <div className="rounded-[28px] border border-white/70 bg-white/75 p-5 shadow-[0_20px_55px_rgba(26,34,26,0.08)] backdrop-blur">
-                <div className="text-xs uppercase tracking-[0.18em] text-[#6d7f6f]">
-                  Terreni agricoli
-                </div>
-                <div className="mt-3 text-4xl font-semibold tracking-[-0.04em]">
+              <div className="terrain-stat-card">
+                <div className="terrain-keyline">Terreni candidati</div>
+                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
                   {scanData?.meta.totalTerrains ?? 0}
                 </div>
+                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                  Poligoni agricoli agganciati alla fonte più vicina.
+                </p>
               </div>
-              <div className="rounded-[28px] border border-white/70 bg-white/75 p-5 shadow-[0_20px_55px_rgba(26,34,26,0.08)] backdrop-blur">
-                <div className="text-xs uppercase tracking-[0.18em] text-[#6d7f6f]">
-                  Raggio operativo
-                </div>
-                <div className="mt-3 text-4xl font-semibold tracking-[-0.04em]">
+              <div className="terrain-stat-card">
+                <div className="terrain-keyline">Raggio operativo</div>
+                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
                   {scanData?.meta.radiusMeters ?? 350}m
                 </div>
+                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                  Buffer costante per il matching territoriale.
+                </p>
+              </div>
+              <div className="terrain-stat-card">
+                <div className="terrain-keyline">Warning pipeline</div>
+                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+                  {warningCount}
+                </div>
+                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                  Segnalazioni tecniche su query o copertura dati.
+                </p>
               </div>
             </div>
-
-            {error ? (
-              <div className="rounded-[26px] border border-[#e6b6af] bg-[#fff2ef] px-5 py-4 text-sm text-[#7f3328]">
-                {error}
-              </div>
-            ) : null}
 
             {scanData?.meta.warnings.map((warning) => (
               <div
                 key={warning}
-                className="rounded-[26px] border border-[#e3d6a7] bg-[#fff9df] px-5 py-4 text-sm text-[#705d1d]"
+                className="terrain-shell border-[rgba(122,100,31,0.2)] bg-[linear-gradient(180deg,rgba(255,248,225,0.92),rgba(244,236,195,0.84))] px-5 py-4 text-sm leading-6 text-[#6b5920]"
               >
                 {warning}
               </div>
             ))}
 
-            <TerrainMap
-              selectedProvinceIds={selectedProvinceIds}
-              sources={scanData?.sources ?? []}
-              terrains={scanData?.terrains ?? []}
-              activeTerrainId={activeTerrainId}
-              onSelectTerrainId={setActiveTerrainId}
-            />
-          </div>
-        </section>
+            <section className="terrain-shell p-3 sm:p-4">
+              <div className="rounded-[28px] border border-[rgba(24,39,27,0.1)] bg-[rgba(255,255,255,0.44)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] sm:p-5">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="max-w-2xl">
+                    <div className="terrain-keyline">Atlante operativo</div>
+                    <h2 className="mt-3 text-[2.25rem] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+                      Mappa, catasto e matching nello stesso stage
+                    </h2>
+                    <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                      Lo stage cartografico è il centro della piattaforma: layer
+                      satellitari, particelle catastali e geometrie dei terreni sono
+                      messi nello stesso linguaggio visivo.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="terrain-mini-card">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                        Province
+                      </div>
+                      <div className="mt-2 text-sm font-medium leading-6 text-[var(--muted-strong)]">
+                        {selectedProvinceSummary}
+                      </div>
+                    </div>
+                    <div className="terrain-mini-card">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                        Fonti
+                      </div>
+                      <div className="mt-2 text-sm font-medium leading-6 text-[var(--muted-strong)]">
+                        {selectedCategorySummary}
+                      </div>
+                    </div>
+                    <div className="terrain-mini-card">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                        Stato
+                      </div>
+                      <div className="mt-2 text-sm font-medium leading-6 text-[var(--muted-strong)]">
+                        {loading
+                          ? `Scan in corso da ${loadingSeconds}s`
+                          : latestLog?.message ?? "In attesa di una scansione"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
-        <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="rounded-[30px] border border-white/70 bg-white/82 p-5 shadow-[0_22px_65px_rgba(26,34,26,0.08)] backdrop-blur">
-            <div className="mb-4 flex items-end justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-semibold tracking-[-0.04em] text-[#172318]">
-                  Risultati ordinati per vicinanza
-                </h2>
-                <p className="mt-1 text-sm text-[#627462]">
-                  Ogni riga è un poligono agricolo OSM collegato alla fonte emissiva più vicina.
+                <div className="mt-5">
+                  <TerrainMap
+                    selectedProvinceIds={selectedProvinceIds}
+                    sources={scanData?.sources ?? []}
+                    terrains={scanData?.terrains ?? []}
+                    activeTerrainId={activeTerrainId}
+                    onSelectTerrainId={setActiveTerrainId}
+                  />
+                </div>
+              </div>
+            </section>
+
+            <div className="grid gap-4 lg:grid-cols-3">
+              <div className="terrain-mini-card p-5">
+                <div className="terrain-keyline">Copertura corrente</div>
+                <div className="mt-3 text-lg font-semibold text-[var(--foreground)]">
+                  {scanData
+                    ? `${scanData.sources.length} fonti e ${scanData.terrains.length} terreni`
+                    : "Nessun run ancora eseguito"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                  La lista a destra si sincronizza con la mappa e con la scheda del
+                  terreno attivo.
                 </p>
               </div>
-              <div className="text-xs text-[#708270]">
-                {scanData?.terrains.length ?? 0} righe visibili
+              <div className="terrain-mini-card p-5">
+                <div className="terrain-keyline">Ultimo evento</div>
+                <div className="mt-3 text-lg font-semibold text-[var(--foreground)]">
+                  {latestLog?.message ?? "Nessun evento registrato"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                  Ogni step del job è leggibile anche dalla timeline nella colonna
+                  di comando.
+                </p>
+              </div>
+              <div className="terrain-mini-card p-5">
+                <div className="terrain-keyline">Terreno attivo</div>
+                <div className="mt-3 text-lg font-semibold text-[var(--foreground)]">
+                  {activeTerrain?.name ?? "Seleziona un poligono"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                  La scheda dossier in basso raccoglie distanza, superficie e fonte
+                  associata.
+                </p>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_390px]">
+          <div className="terrain-shell p-5 lg:p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="terrain-keyline">Registro operativo</div>
+                <h2 className="mt-3 text-[2.1rem] font-semibold tracking-[-0.045em] text-[var(--foreground)]">
+                  Ledger dei terreni ordinati per vicinanza
+                </h2>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                  Ogni riga è un poligono agricolo OSM con la sua fonte emissiva più
+                  vicina. La selezione aggiorna la mappa e la scheda dossier.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="terrain-chip">{selectedProvinceSummary}</span>
+                <span className="terrain-chip">{selectedCategorySummary}</span>
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="min-w-full border-separate border-spacing-y-2">
+            <div className="mt-5 overflow-x-auto">
+              <table className="min-w-full border-separate border-spacing-y-2.5">
                 <thead>
-                  <tr className="text-left text-xs uppercase tracking-[0.16em] text-[#738573]">
+                  <tr className="text-left text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
                     <th className="px-4 pb-1">Terreno</th>
                     <th className="px-4 pb-1">Provincia</th>
                     <th className="px-4 pb-1">Uso</th>
@@ -562,103 +862,175 @@ export default function TerreniDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(scanData?.terrains ?? []).map((terrain) => {
-                    const active = terrain.id === activeTerrainId;
-
-                    return (
-                      <tr
-                        key={terrain.id}
-                        onClick={() => setActiveTerrainId(terrain.id)}
-                        className={`cursor-pointer rounded-2xl transition ${
-                          active
-                            ? "bg-[#1f321f] text-white"
-                            : "bg-[#f7faf4] text-[#1c2a1e] hover:bg-[#eef4e9]"
-                        }`}
+                  {(scanData?.terrains ?? []).length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={6}
+                        className="rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-5 py-8 text-center text-sm leading-6 text-[var(--muted)]"
                       >
-                        <td className="rounded-l-2xl px-4 py-4 font-semibold">{terrain.name}</td>
-                        <td className="px-4 py-4">{PROVINCE_MAP[terrain.provinceId].name}</td>
-                        <td className="px-4 py-4">{landuseLabel(terrain.landuse)}</td>
-                        <td className="px-4 py-4">{formatMeters(terrain.distanceMeters)}</td>
-                        <td className="px-4 py-4">{formatSqm(terrain.areaSqm)}</td>
-                        <td className="rounded-r-2xl px-4 py-4">
-                          <div>{terrain.closestSourceName}</div>
-                          <div className={`text-xs ${active ? "text-[#d6e3cf]" : "text-[#667866]"}`}>
-                            {SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId].label}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                        Nessun terreno ancora presente. Avvia una scansione per
+                        riempire il ledger operativo.
+                      </td>
+                    </tr>
+                  ) : (
+                    (scanData?.terrains ?? []).map((terrain) => {
+                      const active = terrain.id === activeTerrainId;
+
+                      return (
+                        <tr
+                          key={terrain.id}
+                          onClick={() => setActiveTerrainId(terrain.id)}
+                          className={`cursor-pointer rounded-[24px] transition ${
+                            active
+                              ? "bg-[linear-gradient(135deg,#18281c,#2d4330)] text-white shadow-[0_18px_40px_rgba(22,31,23,0.18)]"
+                              : "bg-[rgba(255,255,255,0.56)] text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] hover:bg-[rgba(255,255,255,0.78)]"
+                          }`}
+                        >
+                          <td className="rounded-l-[24px] px-4 py-4 font-semibold">
+                            {terrain.name}
+                          </td>
+                          <td className="px-4 py-4">
+                            {PROVINCE_MAP[terrain.provinceId].name}
+                          </td>
+                          <td className="px-4 py-4">
+                            <span
+                              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                                active
+                                  ? "bg-white/10 text-[#d8e4d4]"
+                                  : "bg-[rgba(214,221,205,0.7)] text-[var(--muted-strong)]"
+                              }`}
+                            >
+                              {landuseLabel(terrain.landuse)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4">
+                            {formatMeters(terrain.distanceMeters)}
+                          </td>
+                          <td className="px-4 py-4">{formatSqm(terrain.areaSqm)}</td>
+                          <td className="rounded-r-[24px] px-4 py-4">
+                            <div>{terrain.closestSourceName}</div>
+                            <div
+                              className={`mt-1 text-xs ${
+                                active ? "text-[#c7d6c5]" : "text-[var(--muted)]"
+                              }`}
+                            >
+                              {
+                                SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId]
+                                  .label
+                              }
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          <aside className="rounded-[30px] border border-white/70 bg-[#162218] p-5 text-white shadow-[0_22px_65px_rgba(26,34,26,0.16)]">
-            <h2 className="text-2xl font-semibold tracking-[-0.04em]">Scheda terreno</h2>
+          <aside className="terrain-shell terrain-shell-dark p-6">
+            <div className="terrain-keyline terrain-keyline-dark">
+              Asset dossier
+            </div>
+            <h2 className="mt-3 text-[2rem] font-semibold tracking-[-0.045em] text-white">
+              Scheda terreno
+            </h2>
+
             {activeTerrain ? (
-              <div className="mt-5 space-y-4 text-sm leading-6 text-[#e4ecda]">
-                <div>
-                  <div className="text-xs uppercase tracking-[0.16em] text-[#97ad95]">
-                    Nome
+              <div className="mt-5 space-y-5 text-sm leading-6 text-[#e4ece0]">
+                <div className="rounded-[26px] border border-white/8 bg-white/6 p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                    Nome asset
                   </div>
-                  <div className="mt-1 text-lg font-semibold text-white">{activeTerrain.name}</div>
+                  <div className="mt-2 text-2xl font-semibold leading-tight text-white">
+                    {activeTerrain.name}
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-[#97ad95]">
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Provincia
                     </div>
-                    <div>{PROVINCE_MAP[activeTerrain.provinceId].name}</div>
+                    <div className="mt-2 font-semibold text-white">
+                      {PROVINCE_MAP[activeTerrain.provinceId].name}
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-[#97ad95]">
+                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Uso
                     </div>
-                    <div>{landuseLabel(activeTerrain.landuse)}</div>
+                    <div className="mt-2 font-semibold text-white">
+                      {landuseLabel(activeTerrain.landuse)}
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-[#97ad95]">
+                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Distanza
                     </div>
-                    <div>{formatMeters(activeTerrain.distanceMeters)}</div>
+                    <div className="mt-2 font-semibold text-white">
+                      {formatMeters(activeTerrain.distanceMeters)}
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-[#97ad95]">
+                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Superficie
                     </div>
-                    <div>{formatSqm(activeTerrain.areaSqm)}</div>
+                    <div className="mt-2 font-semibold text-white">
+                      {formatSqm(activeTerrain.areaSqm)}
+                    </div>
                   </div>
                 </div>
-                <div className="rounded-2xl bg-white/6 p-4">
-                  <div className="text-xs uppercase tracking-[0.16em] text-[#97ad95]">
+
+                <div className="rounded-[26px] border border-white/8 bg-white/6 p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Fonte più vicina
                   </div>
-                  <div className="mt-1 font-semibold text-white">{activeTerrain.closestSourceName}</div>
-                  <div className="text-sm text-[#cfdec9]">
-                    {SOURCE_CATEGORY_MAP[activeTerrain.closestSourceCategoryId].label}
+                  <div className="mt-2 text-lg font-semibold text-white">
+                    {activeTerrain.closestSourceName}
+                  </div>
+                  <div className="mt-1 text-sm text-[#c5d4c3]">
+                    {
+                      SOURCE_CATEGORY_MAP[activeTerrain.closestSourceCategoryId]
+                        .label
+                    }
                   </div>
                 </div>
-                <div className="rounded-2xl bg-white/6 p-4 text-xs leading-6 text-[#cfdec9]">
-                  Centroide:
-                  <br />
-                  {activeTerrain.center.lat.toFixed(6)}, {activeTerrain.center.lng.toFixed(6)}
-                  <br />
-                  OSM:
-                  <br />
+
+                <div className="rounded-[26px] border border-white/8 bg-white/6 p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                    Coordinate centroide
+                  </div>
+                  <div className="mt-3 font-mono text-sm leading-6 text-[#edf3e9]">
+                    {activeTerrain.center.lat.toFixed(6)},{" "}
+                    {activeTerrain.center.lng.toFixed(6)}
+                  </div>
                   <a
                     href={`https://www.openstreetmap.org/way/${activeTerrain.osmId}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-[#f3e38e] underline underline-offset-4"
+                    className="mt-4 inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
                   >
                     Apri poligono sorgente
                   </a>
                 </div>
+
+                <div className="rounded-[26px] border border-white/8 bg-[#111b14] p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                    Step successivi
+                  </div>
+                  <div className="mt-3 space-y-2 text-sm leading-6 text-[#d3dfd1]">
+                    <p>1. Verifica particella sul layer catastale ufficiale.</p>
+                    <p>2. Avvia visura o convenzione per proprietario e titolarità.</p>
+                    <p>3. Integra urbanistica e readiness nella shortlist finale.</p>
+                  </div>
+                </div>
               </div>
             ) : (
               <p className="mt-5 text-sm leading-6 text-[#cfdec9]">
-                Seleziona un terreno dalla tabella o dalla mappa per vedere il dettaglio.
+                Seleziona un terreno dalla tabella o dalla mappa per riempire il
+                dossier fondiario.
               </p>
             )}
           </aside>

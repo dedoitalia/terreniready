@@ -33,8 +33,12 @@ function FitToContent({
 
   useEffect(() => {
     const bounds = [
-      ...sources.map((source) => [source.latitude, source.longitude] as [number, number]),
-      ...terrains.map((terrain) => [terrain.center.lat, terrain.center.lng] as [number, number]),
+      ...sources.map(
+        (source) => [source.latitude, source.longitude] as [number, number],
+      ),
+      ...terrains.map(
+        (terrain) => [terrain.center.lat, terrain.center.lng] as [number, number],
+      ),
     ];
 
     if (bounds.length > 0) {
@@ -42,10 +46,15 @@ function FitToContent({
       return;
     }
 
-    const provinceCenters = selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].center);
+    const provinceCenters = selectedProvinceIds.map(
+      (provinceId) => PROVINCE_MAP[provinceId].center,
+    );
 
     if (provinceCenters.length > 0) {
-      map.setView([provinceCenters[0].lat, provinceCenters[0].lng], provinceCenters.length === 1 ? 11 : 9);
+      map.setView(
+        [provinceCenters[0].lat, provinceCenters[0].lng],
+        provinceCenters.length === 1 ? 11 : 9,
+      );
     }
   }, [map, selectedProvinceIds, sources, terrains]);
 
@@ -59,8 +68,10 @@ export default function TerrainMap({
   activeTerrainId,
   onSelectTerrainId,
 }: TerrainMapProps) {
+  const activeTerrain = terrains.find((terrain) => terrain.id === activeTerrainId);
+
   return (
-    <div className="relative h-[62vh] overflow-hidden rounded-[28px] border border-white/60 bg-[#dce6db] shadow-[0_30px_80px_rgba(28,39,31,0.16)] lg:h-[calc(100vh-12rem)]">
+    <div className="relative h-[64vh] overflow-hidden rounded-[30px] border border-[rgba(255,255,255,0.56)] bg-[#d7ddd1] shadow-[0_30px_80px_rgba(28,39,31,0.16)] lg:h-[calc(100vh-14rem)]">
       <MapContainer
         bounds={[
           [43.58, 10.12],
@@ -89,7 +100,7 @@ export default function TerrainMap({
               format="image/png"
               transparent
               opacity={0.72}
-              attribution='Agenzia delle Entrate - Cartografia Catastale WMS'
+              attribution="Agenzia delle Entrate - Cartografia Catastale WMS"
             />
           </LayersControl.Overlay>
         </LayersControl>
@@ -138,10 +149,10 @@ export default function TerrainMap({
                 click: () => onSelectTerrainId(terrain.id),
               }}
               pathOptions={{
-                color: active ? "#102517" : category.color,
-                fillColor: active ? "#d9e564" : "#79b473",
-                fillOpacity: active ? 0.58 : 0.36,
-                weight: active ? 3 : 1.5,
+                color: active ? "#112117" : category.color,
+                fillColor: active ? "#d9e26a" : "#7fb277",
+                fillOpacity: active ? 0.62 : 0.34,
+                weight: active ? 3 : 1.4,
               }}
             >
               <Popup>
@@ -149,7 +160,9 @@ export default function TerrainMap({
                   <p className="font-semibold">{terrain.name}</p>
                   <p>{landuseLabel(terrain.landuse)}</p>
                   <p>{Math.round(terrain.distanceMeters)} m dalla fonte più vicina</p>
-                  {terrain.areaSqm ? <p>{terrain.areaSqm.toLocaleString("it-IT")} m² stimati</p> : null}
+                  {terrain.areaSqm ? (
+                    <p>{terrain.areaSqm.toLocaleString("it-IT")} m² stimati</p>
+                  ) : null}
                   <p>Fonte: {terrain.closestSourceName}</p>
                 </div>
               </Popup>
@@ -158,9 +171,49 @@ export default function TerrainMap({
         })}
       </MapContainer>
 
-      <div className="pointer-events-none absolute bottom-4 left-4 max-w-xs rounded-2xl bg-[#132017]/86 px-4 py-3 text-xs leading-5 text-white shadow-lg backdrop-blur">
-        Dati mappa: immagini satellitari Esri, particelle catastali WMS Agenzia delle Entrate,
-        fonti e aree agricole da OpenStreetMap.
+      <div className="pointer-events-none absolute left-4 top-4 max-w-sm rounded-[22px] border border-white/12 bg-[rgba(17,27,19,0.82)] px-4 py-3 text-white shadow-lg backdrop-blur">
+        <div className="text-[11px] uppercase tracking-[0.2em] text-[#a9bda5]">
+          Stage mappa
+        </div>
+        <div className="mt-2 text-sm leading-6 text-[#edf3e8]">
+          {selectedProvinceIds.length > 0
+            ? selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].name).join(" · ")
+            : "Toscana"}
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-[#d2ddcf]">
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="uppercase tracking-[0.18em] text-[#93aa8e]">Fonti</div>
+            <div className="mt-1 text-sm font-semibold text-white">{sources.length}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="uppercase tracking-[0.18em] text-[#93aa8e]">Terreni</div>
+            <div className="mt-1 text-sm font-semibold text-white">{terrains.length}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="uppercase tracking-[0.18em] text-[#93aa8e]">Buffer</div>
+            <div className="mt-1 text-sm font-semibold text-white">350m</div>
+          </div>
+        </div>
+      </div>
+
+      {activeTerrain ? (
+        <div className="pointer-events-none absolute bottom-4 right-4 max-w-xs rounded-[22px] border border-white/12 bg-[rgba(255,248,234,0.92)] px-4 py-3 text-xs leading-5 text-[var(--muted-strong)] shadow-lg backdrop-blur">
+          <div className="uppercase tracking-[0.2em] text-[var(--muted)]">
+            Terreno attivo
+          </div>
+          <div className="mt-2 text-sm font-semibold text-[var(--foreground)]">
+            {activeTerrain.name}
+          </div>
+          <div className="mt-1">
+            {landuseLabel(activeTerrain.landuse)} ·{" "}
+            {Math.round(activeTerrain.distanceMeters)} m
+          </div>
+        </div>
+      ) : null}
+
+      <div className="pointer-events-none absolute bottom-4 left-4 max-w-xs rounded-[22px] border border-white/10 bg-[rgba(17,27,19,0.82)] px-4 py-3 text-xs leading-5 text-[#edf3e8] shadow-lg backdrop-blur">
+        Dati mappa: immagini satellitari Esri, particelle catastali WMS Agenzia
+        delle Entrate, fonti e aree agricole da OpenStreetMap.
       </div>
     </div>
   );

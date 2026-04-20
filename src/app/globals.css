@@ -1,8 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --background: #eef2ea;
-  --foreground: #142015;
+  --background: #e7e2d7;
+  --foreground: #122016;
+  --muted: #5b6d5d;
+  --muted-strong: #26372a;
+  --panel: rgba(246, 240, 228, 0.84);
+  --panel-soft: rgba(255, 255, 255, 0.56);
+  --line: rgba(27, 40, 29, 0.12);
+  --line-soft: rgba(255, 255, 255, 0.3);
+  --accent: #d2bf6d;
+  --accent-strong: #8da56e;
+  --accent-clay: #af684d;
+  --danger: #a54e45;
+  --shadow: 0 26px 80px rgba(25, 34, 27, 0.12);
 }
 
 @theme inline {
@@ -16,14 +27,37 @@
   box-sizing: border-box;
 }
 
+*::selection {
+  background: rgba(210, 191, 109, 0.35);
+  color: var(--foreground);
+}
+
 html {
   scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
+  position: relative;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(219, 196, 107, 0.3), transparent 32%),
+    radial-gradient(circle at top right, rgba(89, 123, 95, 0.16), transparent 28%),
+    linear-gradient(180deg, #f3eddf 0%, #ebe6da 48%, #e2ddd2 100%);
   color: var(--foreground);
   font-family: var(--font-space-grotesk), sans-serif;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(28, 43, 30, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(28, 43, 30, 0.04) 1px, transparent 1px);
+  background-size: 112px 112px;
+  mask-image: radial-gradient(circle at top, black 25%, transparent 78%);
+  opacity: 0.5;
 }
 
 a {
@@ -38,22 +72,208 @@ textarea {
   font: inherit;
 }
 
+button {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(38, 55, 42, 0.24);
+  background-clip: padding-box;
+}
+
+.terrain-shell {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 34px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(240, 233, 220, 0.9));
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.terrain-shell-hero {
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at top left, rgba(212, 191, 108, 0.15), transparent 28%),
+    linear-gradient(135deg, rgba(19, 30, 22, 0.97), rgba(35, 52, 35, 0.94) 48%, rgba(64, 82, 55, 0.9) 100%);
+  box-shadow: 0 32px 90px rgba(15, 20, 16, 0.3);
+}
+
+.terrain-shell-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.08), transparent 34%),
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: auto, 110px 110px, 110px 110px;
+  mask-image: linear-gradient(180deg, black, rgba(0, 0, 0, 0.25));
+}
+
+.terrain-shell-dark {
+  background:
+    linear-gradient(180deg, rgba(20, 31, 22, 0.96), rgba(29, 43, 31, 0.94));
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 80px rgba(14, 19, 16, 0.26);
+}
+
+.terrain-keyline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-ibm-plex-mono), monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.terrain-keyline::before {
+  content: "";
+  width: 2.5rem;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.58;
+}
+
+.terrain-keyline-dark {
+  color: rgba(220, 231, 215, 0.76);
+}
+
+.terrain-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(28, 43, 30, 0.1);
+  border-radius: 999px;
+  padding: 0.55rem 0.95rem;
+  background: rgba(255, 255, 255, 0.56);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
+  backdrop-filter: blur(12px);
+}
+
+.terrain-chip-dark {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eef2e7;
+}
+
+.terrain-button-primary,
+.terrain-button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 22px;
+  padding: 1rem 1.2rem;
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease,
+    opacity 180ms ease;
+}
+
+.terrain-button-primary:hover,
+.terrain-button-secondary:hover {
+  transform: translateY(-1px);
+}
+
+.terrain-button-primary:disabled,
+.terrain-button-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
+}
+
+.terrain-button-primary {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(135deg, #132016, #273b29);
+  color: white;
+  box-shadow: 0 18px 40px rgba(11, 20, 13, 0.18);
+}
+
+.terrain-button-secondary {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--muted-strong);
+}
+
+.terrain-button-secondary-dark {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: #edf2e8;
+}
+
+.terrain-stat-card {
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  padding: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(244, 239, 230, 0.88));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 18px 48px rgba(25, 34, 27, 0.07);
+}
+
+.terrain-mini-card {
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.54);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 14px 36px rgba(25, 34, 27, 0.06);
+}
+
 .leaflet-container {
   font-family: var(--font-space-grotesk), sans-serif;
-  background: #dce6db;
+  background: #d6ddd1;
 }
 
 .leaflet-control-layers {
-  border: 1px solid rgba(255, 255, 255, 0.7) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 18px 40px rgba(18, 29, 20, 0.18) !important;
+  border: 1px solid rgba(18, 30, 21, 0.12) !important;
+  border-radius: 18px !important;
+  background: rgba(247, 242, 233, 0.94) !important;
+  box-shadow: 0 18px 48px rgba(18, 29, 20, 0.18) !important;
   overflow: hidden;
 }
 
+.leaflet-control-layers-toggle {
+  border-radius: 14px !important;
+}
+
 .leaflet-popup-content-wrapper {
-  border-radius: 18px;
+  border-radius: 20px !important;
+  background: rgba(249, 244, 235, 0.96) !important;
+  box-shadow: 0 22px 60px rgba(15, 20, 16, 0.18) !important;
 }
 
 .leaflet-popup-content {
   margin: 14px 16px;
+}
+
+.leaflet-popup-tip {
+  background: rgba(249, 244, 235, 0.96) !important;
+}
+
+.leaflet-control-attribution {
+  display: none !important;
 }
