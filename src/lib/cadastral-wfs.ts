@@ -21,6 +21,7 @@ const CADASTRAL_WFS_BASE_URL =
 const SEARCH_RADIUS_METERS = 350;
 const BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
 const CADASTRAL_ANCHORS_PER_CHUNK = 10;
+const CADASTRAL_EMPTY_BBOX_SPLIT_DEPTH = 2;
 const CADASTRAL_WFS_PAGE_SIZE = 200;
 const CADASTRAL_WFS_MAX_PAGES = 6;
 const CADASTRAL_WFS_CACHE_TTL_MS = 45 * 60 * 1000;
@@ -86,20 +87,12 @@ function chunkArray<T>(items: T[], size: number) {
   return chunks;
 }
 
-function terrainClusterRadiusForSourceCount(sourceCount: number) {
-  if (sourceCount >= 220) {
-    return 460;
-  }
-
-  if (sourceCount >= 120) {
-    return 340;
-  }
-
+function terrainClusterRadiusForSourceCount() {
   return BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS;
 }
 
 function buildTerrainSearchAnchors(sources: SourceFeature[]) {
-  const clusterRadiusMeters = terrainClusterRadiusForSourceCount(sources.length);
+  const clusterRadiusMeters = terrainClusterRadiusForSourceCount();
   const anchors: Array<{
     lat: number;
     lng: number;
@@ -418,6 +411,87 @@ async function fetchWfsPage(url: string) {
   }
 }
 
+type AnchorChunkFetchResult = {
+  parcels: CadastralParcelFeature[];
+  hitPageCap: boolean;
+};
+
+async function fetchParcelsForAnchorChunk(
+  provinceName: string,
+  blockLabel: string,
+  anchors: TerrainSearchAnchor[],
+  remainingSplits: number,
+  reporter?: ProgressReporter,
+): Promise<AnchorChunkFetchResult> {
+  const bbox = bboxForAnchorChunk(anchors);
+  const parcelMap = new Map<string, CadastralParcelFeature>();
+  let nextUrl: string | null = buildWfsUrl(
+    bbox.south,
+    bbox.west,
+    bbox.north,
+    bbox.east,
+  );
+  let pageCount = 0;
+  let hitPageCap = false;
+
+  while (nextUrl && pageCount < CADASTRAL_WFS_MAX_PAGES) {
+    pageCount += 1;
+    reportProgress(
+      reporter,
+      `${provinceName}: particelle catastali blocco ${blockLabel}, pagina ${pageCount}.`,
+    );
+    const page = await fetchWfsPage(nextUrl);
+
+    for (const parcel of page.parcels) {
+      parcelMap.set(parcel.id, parcel);
+    }
+
+    nextUrl = page.nextUrl;
+  }
+
+  if (nextUrl) {
+    hitPageCap = true;
+  }
+
+  if (parcelMap.size === 0 && anchors.length > 1 && remainingSplits > 0) {
+    const midpoint = Math.ceil(anchors.length / 2);
+    const leftAnchors = anchors.slice(0, midpoint);
+    const rightAnchors = anchors.slice(midpoint);
+
+    reportProgress(
+      reporter,
+      `${provinceName}: blocco particelle ${blockLabel} vuoto su bbox aggregato, lo suddivido.`,
+    );
+
+    const [leftResult, rightResult] = await Promise.all([
+      fetchParcelsForAnchorChunk(
+        provinceName,
+        `${blockLabel}.a`,
+        leftAnchors,
+        remainingSplits - 1,
+        reporter,
+      ),
+      fetchParcelsForAnchorChunk(
+        provinceName,
+        `${blockLabel}.b`,
+        rightAnchors,
+        remainingSplits - 1,
+        reporter,
+      ),
+    ]);
+
+    return {
+      parcels: [...leftResult.parcels, ...rightResult.parcels],
+      hitPageCap: hitPageCap || leftResult.hitPageCap || rightResult.hitPageCap,
+    };
+  }
+
+  return {
+    parcels: Array.from(parcelMap.values()),
+    hitPageCap,
+  };
+}
+
 function parcelFoglio(reference: string) {
   const match = reference.match(/^[A-Z0-9]+_(\d{4})/i);
   return match?.[1] ?? "n.d.";
@@ -539,7 +613,7 @@ export async function fetchCadastralTerrainsNearSources(
   const anchors = buildTerrainSearchAnchors(sources);
   const anchorChunks = chunkArray(anchors, CADASTRAL_ANCHORS_PER_CHUNK);
   const parcelMap = new Map<string, CadastralParcelFeature>();
-  let warning: string | null = null;
+  let hitPageCap = false;
 
   reportProgress(
     reporter,
@@ -560,34 +634,27 @@ export async function fetchCadastralTerrainsNearSources(
       `${province.name}: blocco particelle ${chunkIndex + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkSourceCount} fonti.`,
     );
 
-    const bbox = bboxForAnchorChunk(anchorChunk);
-    let nextUrl: string | null = buildWfsUrl(
-      bbox.south,
-      bbox.west,
-      bbox.north,
-      bbox.east,
+    const chunkResult = await fetchParcelsForAnchorChunk(
+      province.name,
+      `${chunkIndex + 1}/${anchorChunks.length}`,
+      anchorChunk,
+      CADASTRAL_EMPTY_BBOX_SPLIT_DEPTH,
+      reporter,
     );
-    let pageCount = 0;
 
-    while (nextUrl && pageCount < CADASTRAL_WFS_MAX_PAGES) {
-      pageCount += 1;
-      reportProgress(
-        reporter,
-        `${province.name}: particelle catastali blocco ${chunkIndex + 1}/${anchorChunks.length}, pagina ${pageCount}.`,
-      );
-      const page = await fetchWfsPage(nextUrl);
-
-      for (const parcel of page.parcels) {
-        parcelMap.set(parcel.id, parcel);
-      }
-
-      nextUrl = page.nextUrl;
+    for (const parcel of chunkResult.parcels) {
+      parcelMap.set(parcel.id, parcel);
     }
 
-    if (nextUrl) {
-      warning = `${province.name}: copertura particelle catastali parziale al blocco ${chunkIndex + 1}/${anchorChunks.length} per paginazione WFS oltre ${CADASTRAL_WFS_MAX_PAGES} pagine.`;
-      reportProgress(reporter, warning);
-    }
+    hitPageCap = hitPageCap || chunkResult.hitPageCap;
+  }
+
+  const warning = hitPageCap
+    ? `${province.name}: copertura particelle catastali parziale su uno o più blocchi per paginazione WFS oltre ${CADASTRAL_WFS_MAX_PAGES} pagine.`
+    : null;
+
+  if (warning) {
+    reportProgress(reporter, warning);
   }
 
   reportProgress(
