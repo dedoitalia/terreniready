@@ -65,6 +65,10 @@ export type ScanRequest = {
   categoryIds: SourceCategoryId[];
 };
 
+export type ScanProgressEvent = {
+  message: string;
+};
+
 export type ScanResponse = {
   sources: SourceFeature[];
   terrains: TerrainFeature[];
@@ -77,4 +81,26 @@ export type ScanResponse = {
     totalTerrains: number;
     warnings: string[];
   };
+};
+
+export type ScanJobStatus = "queued" | "running" | "completed" | "failed";
+
+export type ScanJobLogEntry = {
+  timestamp: string;
+  message: string;
+};
+
+export type ScanJobSnapshot = {
+  id: string;
+  status: ScanJobStatus;
+  createdAt: string;
+  updatedAt: string;
+  request: ScanRequest;
+  logs: ScanJobLogEntry[];
+  result: ScanResponse | null;
+  error: string | null;
+};
+
+export type ScanJobCreateResponse = {
+  jobId: string;
 };

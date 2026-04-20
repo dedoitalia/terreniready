@@ -7,6 +7,8 @@ import { startTransition, useEffect, useState } from "react";
 import { PROVINCES, PROVINCE_MAP } from "@/lib/province-data";
 import { SOURCE_CATEGORIES, SOURCE_CATEGORY_MAP, landuseLabel } from "@/lib/source-types";
 import type {
+  ScanJobCreateResponse,
+  ScanJobSnapshot,
   ProvinceId,
   ScanResponse,
   SourceCategoryId,
@@ -62,6 +64,12 @@ function safeParseJson<T>(raw: string): T | null {
   } catch {
     return null;
   }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function buildCsv(data: ScanResponse) {
@@ -154,6 +162,7 @@ export default function TerreniDashboard() {
     "repair",
   ]);
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
+  const [scanJob, setScanJob] = useState<ScanJobSnapshot | null>(null);
   const [activeTerrainId, setActiveTerrainId] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
@@ -192,59 +201,93 @@ export default function TerreniDashboard() {
     setLoading(true);
     setLoadingSeconds(0);
     setError(null);
+    setScanJob(null);
 
     startTransition(() => {
       void (async () => {
-        let timeoutId: number | undefined;
-
         try {
-          const controller = new AbortController();
-          timeoutId = window.setTimeout(() => controller.abort(), 90_000);
-          const response = await fetch("/api/scan", {
+          const startResponse = await fetch("/api/scan/jobs", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
-            signal: controller.signal,
             body: JSON.stringify({
               provinceIds: selectedProvinceIds,
               categoryIds: selectedCategoryIds,
             }),
           });
-          window.clearTimeout(timeoutId);
+          const startRaw = await startResponse.text();
+          const startPayload = safeParseJson<
+            ScanJobCreateResponse & { error?: string }
+          >(startRaw);
 
-          const rawPayload = await response.text();
-          const payload = safeParseJson<ScanResponse & { error?: string }>(rawPayload);
-
-          if (!response.ok) {
+          if (!startResponse.ok) {
             throw new Error(
-              payload?.error ??
+              startPayload?.error ??
                 "Il server non ha restituito una risposta valida. Riprova tra pochi secondi.",
             );
           }
 
-          if (!payload) {
-            throw new Error(
-              "Risposta non valida dal server. Probabile riavvio o deploy in corso, riprova tra pochi secondi.",
-            );
+          if (!startPayload?.jobId) {
+            throw new Error("Impossibile ottenere il job di scansione.");
           }
 
-          setScanData(payload);
-          setActiveTerrainId(payload.terrains[0]?.id);
+          const startedAt = Date.now();
+
+          while (Date.now() - startedAt < 180_000) {
+            const statusResponse = await fetch(
+              `/api/scan/jobs/${startPayload.jobId}`,
+              {
+                cache: "no-store",
+              },
+            );
+            const statusRaw = await statusResponse.text();
+            const snapshot = safeParseJson<ScanJobSnapshot & { error?: string }>(
+              statusRaw,
+            );
+
+            if (!statusResponse.ok) {
+              throw new Error(
+                snapshot?.error ??
+                  "Il job di scansione non è più disponibile. Riprova.",
+              );
+            }
+
+            if (!snapshot) {
+              throw new Error(
+                "Il server ha restituito uno stato scansione non valido. Riprova tra pochi secondi.",
+              );
+            }
+
+            setScanJob(snapshot);
+
+            if (snapshot.status === "completed" && snapshot.result) {
+              setScanData(snapshot.result);
+              setActiveTerrainId(snapshot.result.terrains[0]?.id);
+              setLoading(false);
+              setLoadingSeconds(0);
+              return;
+            }
+
+            if (snapshot.status === "failed") {
+              throw new Error(
+                snapshot.error ?? "La scansione si è interrotta sul server.",
+              );
+            }
+
+            await sleep(1200);
+          }
+
+          throw new Error(
+            "La scansione ha superato il tempo massimo. Riduci province o categorie e riprova.",
+          );
         } catch (scanError) {
-          setScanData(null);
-          setActiveTerrainId(undefined);
           setError(
-            scanError instanceof DOMException && scanError.name === "AbortError"
-              ? "La scansione sta impiegando troppo. Prova con una sola provincia o meno categorie."
-              : scanError instanceof Error
+            scanError instanceof Error
               ? scanError.message
               : "Errore durante la scansione.",
           );
         } finally {
-          if (timeoutId) {
-            window.clearTimeout(timeoutId);
-          }
           setLoadingSeconds(0);
           setLoading(false);
         }
@@ -388,6 +431,29 @@ export default function TerreniDashboard() {
                   {selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
                     ? " Con piu province o categorie puo richiedere 20-60 secondi."
                     : " Sto interrogando OpenStreetMap e calcolando i poligoni agricoli nel buffer dei 350 metri."}
+                </div>
+              ) : null}
+
+              {scanJob ? (
+                <div className="rounded-[24px] border border-[#d8dfd1] bg-[#f8faf5] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-[#233525]">
+                      Log scansione
+                    </div>
+                    <div className="text-xs uppercase tracking-[0.16em] text-[#627462]">
+                      {scanJob.status}
+                    </div>
+                  </div>
+                  <div className="max-h-56 space-y-2 overflow-auto rounded-2xl bg-white p-3 font-mono text-xs leading-5 text-[#405140]">
+                    {scanJob.logs.map((entry) => (
+                      <div key={`${entry.timestamp}-${entry.message}`}>
+                        <span className="text-[#7a8b7a]">
+                          {new Date(entry.timestamp).toLocaleTimeString("it-IT")}
+                        </span>{" "}
+                        {entry.message}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : null}
 

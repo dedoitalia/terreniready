@@ -10,6 +10,7 @@ import {
 import type {
   BoundingBox,
   ProvinceId,
+  ScanProgressEvent,
   ScanResponse,
   SourceCategoryId,
   SourceFeature,
@@ -56,6 +57,12 @@ type CachedOverpassValue = {
   value: OverpassResponse;
 };
 
+type ProgressReporter = (event: ScanProgressEvent) => void;
+
+type RunScanOptions = {
+  reportProgress?: ProgressReporter;
+};
+
 class OverpassRateLimitError extends Error {
   constructor(message: string) {
     super(message);
@@ -93,6 +100,10 @@ function delay(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function reportProgress(reporter: ProgressReporter | undefined, message: string) {
+  reporter?.({ message });
 }
 
 function parseRetryAfterMs(headerValue: string | null) {
@@ -156,11 +167,16 @@ function buildSelectorStatements(
     .join("\n");
 }
 
-async function fetchOverpass(query: string): Promise<OverpassResponse> {
+async function fetchOverpass(
+  query: string,
+  reporter?: ProgressReporter,
+  contextLabel?: string,
+): Promise<OverpassResponse> {
   const now = Date.now();
   const cached = overpassCache.get(query);
 
   if (cached && cached.expiresAt > now) {
+    reportProgress(reporter, `${contextLabel ?? "Query"}: uso cache locale temporanea.`);
     return cached.value;
   }
 
@@ -179,10 +195,18 @@ async function fetchOverpass(query: string): Promise<OverpassResponse> {
 
       if (cooldownUntil > Date.now()) {
         sawRateLimit = true;
+        reportProgress(
+          reporter,
+          `${contextLabel ?? "Query"}: salto ${new URL(endpoint).hostname} per cooldown attivo.`,
+        );
         continue;
       }
 
       try {
+        reportProgress(
+          reporter,
+          `${contextLabel ?? "Query"}: interrogo ${new URL(endpoint).hostname}.`,
+        );
         const response = await fetch(endpoint, {
           method: "POST",
           cache: "no-store",
@@ -202,6 +226,10 @@ async function fetchOverpass(query: string): Promise<OverpassResponse> {
             Date.now() + parseRetryAfterMs(response.headers.get("retry-after")),
           );
           lastError = new Error(`${endpoint} responded with 429`);
+          reportProgress(
+            reporter,
+            `${contextLabel ?? "Query"}: ${new URL(endpoint).hostname} ha risposto 429, passo al prossimo endpoint.`,
+          );
           await delay(ENDPOINT_RETRY_DELAY_MS);
           continue;
         }
@@ -231,6 +259,10 @@ async function fetchOverpass(query: string): Promise<OverpassResponse> {
     }
 
     if (cached?.value) {
+      reportProgress(
+        reporter,
+        `${contextLabel ?? "Query"}: tutti gli endpoint sono sotto pressione, riuso il dato cache precedente.`,
+      );
       return cached.value;
     }
 
@@ -310,10 +342,15 @@ function categoryIdsForTags(
 async function fetchSourcesForProvince(
   provinceId: ProvinceId,
   categoryIds: SourceCategoryId[],
+  reporter?: ProgressReporter,
 ) {
   const province = PROVINCE_MAP[provinceId];
   const selectors = categoryIds.flatMap(
     (categoryId) => SOURCE_CATEGORY_MAP[categoryId].selectors,
+  );
+  reportProgress(
+    reporter,
+    `${province.name}: avvio ricerca fonti emissive su ${categoryIds.length} categorie.`,
   );
   const query = `
 [out:json][timeout:40];
@@ -323,9 +360,9 @@ ${buildSelectorStatements(selectors, province.bbox, ["node", "way"])}
 out center;
 `;
 
-  const data = await fetchOverpass(query);
+  const data = await fetchOverpass(query, reporter, `${province.name} fonti`);
 
-  return data.elements
+  const sources = data.elements
     .map((element) => {
       const coordinates = sourceCoordinates(element);
       const tags = element.tags ?? {};
@@ -356,6 +393,13 @@ out center;
       } satisfies SourceFeature;
     })
     .filter((source): source is SourceFeature => source !== null);
+
+  reportProgress(
+    reporter,
+    `${province.name}: fonti emissive trovate ${sources.length}.`,
+  );
+
+  return sources;
 }
 
 function chunkArray<T>(items: T[], size: number) {
@@ -388,6 +432,7 @@ function buildAroundStatements(
 async function fetchAgriculturalWaysNearSources(
   provinceId: ProvinceId,
   provinceSources: SourceFeature[],
+  reporter?: ProgressReporter,
 ) {
   if (provinceSources.length === 0) {
     return [] as OverpassElement[];
@@ -395,8 +440,18 @@ async function fetchAgriculturalWaysNearSources(
 
   const sourceChunks = chunkArray(provinceSources, SOURCES_PER_AGRI_CHUNK);
   const allElements: OverpassElement[] = [];
+  const province = PROVINCE_MAP[provinceId];
 
-  for (const sourceChunk of sourceChunks) {
+  reportProgress(
+    reporter,
+    `${province.name}: avvio ricerca poligoni agricoli vicini alle fonti in ${sourceChunks.length} blocchi.`,
+  );
+
+  for (const [index, sourceChunk] of sourceChunks.entries()) {
+    reportProgress(
+      reporter,
+      `${province.name}: blocco terreni ${index + 1}/${sourceChunks.length} su ${sourceChunk.length} fonti.`,
+    );
     const query = `
 [out:json][timeout:45];
 (
@@ -405,7 +460,11 @@ ${buildAroundStatements(AGRICULTURAL_SELECTORS, sourceChunk)}
 out geom;
 `;
 
-    const data = await fetchOverpass(query);
+    const data = await fetchOverpass(
+      query,
+      reporter,
+      `${province.name} terreni blocco ${index + 1}/${sourceChunks.length}`,
+    );
     allElements.push(...data.elements);
   }
 
@@ -415,7 +474,14 @@ out geom;
     unique.set(`${element.type}-${element.id}`, element);
   }
 
-  return Array.from(unique.values()).filter((element) => element.type === "way");
+  const ways = Array.from(unique.values()).filter((element) => element.type === "way");
+
+  reportProgress(
+    reporter,
+    `${province.name}: poligoni agricoli candidati ${ways.length}.`,
+  );
+
+  return ways;
 }
 
 function mergeSources(sources: SourceFeature[]) {
@@ -548,21 +614,34 @@ function computeTerrainCandidate(
 async function scanProvince(
   provinceId: ProvinceId,
   categoryIds: SourceCategoryId[],
+  reporter?: ProgressReporter,
 ) {
+  const province = PROVINCE_MAP[provinceId];
+  reportProgress(reporter, `${province.name}: scansione provincia avviata.`);
   const sources = mergeSources(
-    await fetchSourcesForProvince(provinceId, categoryIds),
+    await fetchSourcesForProvince(provinceId, categoryIds, reporter),
   ).sort((left, right) =>
     left.name.localeCompare(right.name, "it"),
   );
   const landWays =
     sources.length === 0
       ? []
-      : await fetchAgriculturalWaysNearSources(provinceId, sources);
+      : await fetchAgriculturalWaysNearSources(provinceId, sources, reporter);
+
+  reportProgress(
+    reporter,
+    `${province.name}: calcolo prossimità terreno-fonte su ${landWays.length} poligoni.`,
+  );
 
   const terrains = landWays
     .map((element) => computeTerrainCandidate(provinceId, element, sources))
     .filter((terrain): terrain is TerrainFeature => terrain !== null)
     .sort((left, right) => left.distanceMeters - right.distanceMeters);
+
+  reportProgress(
+    reporter,
+    `${province.name}: terreni agricoli nel raggio trovati ${terrains.length}.`,
+  );
 
   return {
     sources,
@@ -573,8 +652,10 @@ async function scanProvince(
 export async function runScan(
   provinceIds: ProvinceId[],
   categoryIds: SourceCategoryId[],
+  options?: RunScanOptions,
 ): Promise<ScanResponse> {
   const warnings: string[] = [];
+  const reporter = options?.reportProgress;
   const provinces = provinceIds.filter((provinceId) => provinceId in PROVINCE_MAP);
   const categories = categoryIds.filter((categoryId) =>
     SOURCE_CATEGORIES.some((category) => category.id === categoryId),
@@ -588,10 +669,15 @@ export async function runScan(
     throw new Error("Seleziona almeno una tipologia di fonte emissiva.");
   }
 
+  reportProgress(
+    reporter,
+    `Scansione avviata su ${provinces.length} province e ${categories.length} categorie.`,
+  );
+
   const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
 
   for (const provinceId of provinces) {
-    provinceResults.push(await scanProvince(provinceId, categories));
+    provinceResults.push(await scanProvince(provinceId, categories, reporter));
   }
 
   const sources = provinceResults
@@ -625,6 +711,11 @@ export async function runScan(
       "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
     );
   }
+
+  reportProgress(
+    reporter,
+    `Scansione completata: ${sources.length} fonti e ${Math.min(terrains.length, MAX_TERRAINS)} terreni restituiti.`,
+  );
 
   return {
     sources,
