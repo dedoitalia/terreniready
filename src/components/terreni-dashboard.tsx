@@ -208,16 +208,20 @@ export default function TerreniDashboard() {
     (terrain) => terrain.id === activeTerrainId,
   );
 
+  const selectedProvinceNames = selectedProvinceIds.map(
+    (provinceId) => PROVINCE_MAP[provinceId].name,
+  );
   const selectedProvinceSummary =
-    selectedProvinceIds.length > 0
-      ? selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].name).join(" · ")
+    selectedProvinceNames.length > 0
+      ? selectedProvinceNames.join(" · ")
       : "Nessuna provincia selezionata";
 
+  const selectedCategoryLabels = selectedCategoryIds.map(
+    (categoryId) => SOURCE_CATEGORY_MAP[categoryId].label,
+  );
   const selectedCategorySummary =
-    selectedCategoryIds.length > 0
-      ? selectedCategoryIds
-          .map((categoryId) => SOURCE_CATEGORY_MAP[categoryId].label)
-          .join(" · ")
+    selectedCategoryLabels.length > 0
+      ? selectedCategoryLabels.join(" · ")
       : "Nessuna categoria selezionata";
 
   const latestLog = scanJob?.logs.at(-1);
@@ -815,31 +819,63 @@ export default function TerreniDashboard() {
                       messi nello stesso linguaggio visivo.
                     </p>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                     <div className="terrain-mini-card">
                       <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
                         Province
                       </div>
-                      <div className="mt-2 text-sm font-medium leading-6 text-[var(--muted-strong)]">
-                        {selectedProvinceSummary}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {selectedProvinceNames.length > 0 ? (
+                          selectedProvinceNames.map((provinceName) => (
+                            <span key={provinceName} className="terrain-inline-pill">
+                              {provinceName}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-sm font-medium leading-6 text-[var(--muted-strong)]">
+                            Nessuna provincia selezionata
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="terrain-mini-card">
                       <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
                         Fonti
                       </div>
-                      <div className="mt-2 text-sm font-medium leading-6 text-[var(--muted-strong)]">
-                        {selectedCategorySummary}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {selectedCategoryLabels.length > 0 ? (
+                          selectedCategoryLabels.map((categoryLabel) => (
+                            <span key={categoryLabel} className="terrain-inline-pill">
+                              {categoryLabel}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-sm font-medium leading-6 text-[var(--muted-strong)]">
+                            Nessuna categoria selezionata
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="terrain-mini-card">
                       <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
                         Stato
                       </div>
-                      <div className="mt-2 text-sm font-medium leading-6 text-[var(--muted-strong)]">
-                        {loading
-                          ? `Scan in corso da ${loadingSeconds}s`
-                          : latestLog?.message ?? "In attesa di una scansione"}
+                      <div className="mt-3 space-y-2">
+                        <div className="text-base font-semibold leading-6 text-[var(--muted-strong)]">
+                          {loading ? "Scan in corso" : "Stato pipeline"}
+                        </div>
+                        <div className="text-sm leading-6 text-[var(--muted)]">
+                          {loading ? (
+                            <>
+                              da{" "}
+                              <span className="font-mono text-[var(--muted-strong)]">
+                                {loadingSeconds}s
+                              </span>
+                            </>
+                          ) : (
+                            latestLog?.message ?? "In attesa di una scansione"
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
