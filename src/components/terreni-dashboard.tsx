@@ -350,7 +350,7 @@ export default function TerreniDashboard() {
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [terrainSortMode, setTerrainSortMode] =
-    useState<TerrainSortMode>("distance-asc");
+    useState<TerrainSortMode>("area-desc");
   const streamRef = useRef<EventSource | null>(null);
   const streamReconnectTimerRef = useRef<number | null>(null);
   const streamReconnectNoticeRef = useRef(false);
