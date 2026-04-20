@@ -231,9 +231,13 @@ export default function TerreniDashboard() {
   const [loading, setLoading] = useState(false);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [dossierOffset, setDossierOffset] = useState(0);
   const streamRef = useRef<EventSource | null>(null);
   const streamReconnectTimerRef = useRef<number | null>(null);
   const streamReconnectNoticeRef = useRef(false);
+  const dossierSectionRef = useRef<HTMLElement | null>(null);
+  const dossierRailRef = useRef<HTMLElement | null>(null);
+  const terrainRowRefs = useRef(new Map<string, HTMLTableRowElement>());
 
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
@@ -284,6 +288,42 @@ export default function TerreniDashboard() {
       streamRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    const updateDossierOffset = () => {
+      if (typeof window === "undefined" || window.innerWidth < 1280) {
+        setDossierOffset(0);
+        return;
+      }
+
+      const section = dossierSectionRef.current;
+      const rail = dossierRailRef.current;
+      const activeRow = activeTerrainId
+        ? terrainRowRefs.current.get(activeTerrainId)
+        : null;
+
+      if (!section || !rail || !activeRow) {
+        setDossierOffset(0);
+        return;
+      }
+
+      const sectionRect = section.getBoundingClientRect();
+      const rowRect = activeRow.getBoundingClientRect();
+      const rowTopWithinSection = rowRect.top - sectionRect.top;
+      const desiredOffset = Math.max(0, rowTopWithinSection - 8);
+      const maxOffset = Math.max(0, section.scrollHeight - rail.offsetHeight);
+
+      setDossierOffset(Math.min(Math.round(desiredOffset), maxOffset));
+    };
+
+    const frameId = window.requestAnimationFrame(updateDossierOffset);
+    window.addEventListener("resize", updateDossierOffset);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", updateDossierOffset);
+    };
+  }, [activeTerrainId, scanData?.terrains.length]);
 
   function clearStreamReconnectWatchdog() {
     if (streamReconnectTimerRef.current) {
@@ -1043,7 +1083,10 @@ export default function TerreniDashboard() {
           </section>
         </main>
 
-        <section className="grid gap-6 xl:items-start xl:grid-cols-[minmax(0,1fr)_390px]">
+        <section
+          ref={dossierSectionRef}
+          className="grid gap-6 xl:items-start xl:grid-cols-[minmax(0,1fr)_390px]"
+        >
           <div className="terrain-shell p-5 lg:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
@@ -1092,6 +1135,14 @@ export default function TerreniDashboard() {
                       return (
                         <tr
                           key={terrain.id}
+                          ref={(node) => {
+                            if (node) {
+                              terrainRowRefs.current.set(terrain.id, node);
+                              return;
+                            }
+
+                            terrainRowRefs.current.delete(terrain.id);
+                          }}
                           onClick={() => setActiveTerrainId(terrain.id)}
                           className={`cursor-pointer rounded-[24px] transition ${
                             active
@@ -1142,7 +1193,14 @@ export default function TerreniDashboard() {
             </div>
           </div>
 
-          <aside className="terrain-shell terrain-shell-dark terrain-sticky-rail p-6">
+          <aside
+            ref={dossierRailRef}
+            className="terrain-shell terrain-shell-dark terrain-dossier-rail p-6"
+            style={{
+              transform:
+                dossierOffset > 0 ? `translateY(${dossierOffset}px)` : undefined,
+            }}
+          >
             <div className="terrain-keyline terrain-keyline-dark">
               Asset dossier
             </div>
