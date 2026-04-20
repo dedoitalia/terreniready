@@ -26,11 +26,14 @@ const OVERPASS_ENDPOINTS = [
 
 const SEARCH_RADIUS_METERS = 350;
 const MAX_TERRAINS = 250;
-const OVERPASS_CACHE_TTL_MS = 10 * 60 * 1000;
+const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
 const SOURCES_PER_AGRI_CHUNK = 40;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
+const OVERPASS_MAX_CYCLES = 2;
+const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
+const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
 
 type OverpassElement = {
   type: "node" | "way";
@@ -57,6 +60,11 @@ type CachedOverpassValue = {
   value: OverpassResponse;
 };
 
+type CachedScanResult = {
+  expiresAt: number;
+  value: ScanResponse;
+};
+
 type ProgressReporter = (event: ScanProgressEvent) => void;
 
 type RunScanOptions = {
@@ -80,6 +88,10 @@ const overpassInflight = getGlobalStore<Map<string, Promise<OverpassResponse>>>(
 );
 const endpointCooldowns = getGlobalStore<Map<string, number>>(
   "__terreniReadyOverpassEndpointCooldowns",
+  () => new Map(),
+);
+const scanResultCache = getGlobalStore<Map<string, CachedScanResult>>(
+  "__terreniReadyScanResultCache",
   () => new Map(),
 );
 
@@ -108,6 +120,31 @@ function reportProgress(reporter: ProgressReporter | undefined, message: string)
 
 function endpointRole(index: number) {
   return index === 0 ? "primario" : `fallback ${index}`;
+}
+
+function cloneScanResponse(result: ScanResponse) {
+  return structuredClone(result);
+}
+
+function buildScanCacheKey(
+  provinceIds: ProvinceId[],
+  categoryIds: SourceCategoryId[],
+) {
+  return JSON.stringify({
+    provinceIds: [...provinceIds].sort(),
+    categoryIds: [...categoryIds].sort(),
+  });
+}
+
+function isRecoverableOverpassError(error: unknown) {
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+  return (
+    message.includes("rate limit") ||
+    message.includes("timed out") ||
+    message.includes("no overpass endpoint")
+  );
 }
 
 function parseRetryAfterMs(headerValue: string | null) {
@@ -194,109 +231,125 @@ async function fetchOverpass(
     let lastError: Error | null = null;
     let sawRateLimit = false;
 
-    for (const [index, endpoint] of OVERPASS_ENDPOINTS.entries()) {
-      const cooldownUntil = endpointCooldowns.get(endpoint) ?? 0;
-      const hostname = new URL(endpoint).hostname;
-      const role = endpointRole(index);
+    for (let cycle = 0; cycle < OVERPASS_MAX_CYCLES; cycle += 1) {
+      let attemptedInCycle = false;
 
-      if (cooldownUntil > Date.now()) {
-        sawRateLimit = true;
-        reportProgress(
-          reporter,
-          `${contextLabel ?? "Query"}: salto ${hostname} (${role}) per cooldown attivo.`,
-        );
-        continue;
-      }
+      for (const [index, endpoint] of OVERPASS_ENDPOINTS.entries()) {
+        const cooldownUntil = endpointCooldowns.get(endpoint) ?? 0;
+        const hostname = new URL(endpoint).hostname;
+        const role = endpointRole(index);
 
-      try {
-        reportProgress(
-          reporter,
-          `${contextLabel ?? "Query"}: interrogo ${hostname} (${role}).`,
-        );
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          controller.abort();
-        }, OVERPASS_REQUEST_TIMEOUT_MS);
-        let response: Response;
+        if (cooldownUntil > Date.now()) {
+          sawRateLimit = true;
+          reportProgress(
+            reporter,
+            `${contextLabel ?? "Query"}: salto ${hostname} (${role}) per cooldown attivo.`,
+          );
+          continue;
+        }
+
+        attemptedInCycle = true;
 
         try {
-          response = await fetch(endpoint, {
-            method: "POST",
-            cache: "no-store",
-            signal: controller.signal,
-            headers: {
-              Accept: "application/json",
-              "Content-Type": "text/plain;charset=UTF-8",
-              "User-Agent":
-                "TerreniReady/0.1 (+https://terreniready.onrender.com; repo:https://github.com/dedoitalia/terreniready)",
-            },
-            body: query,
+          reportProgress(
+            reporter,
+            `${contextLabel ?? "Query"}: interrogo ${hostname} (${role}).`,
+          );
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => {
+            controller.abort();
+          }, OVERPASS_REQUEST_TIMEOUT_MS);
+          let response: Response;
+
+          try {
+            response = await fetch(endpoint, {
+              method: "POST",
+              cache: "no-store",
+              signal: controller.signal,
+              headers: {
+                Accept: "application/json",
+                "Content-Type": "text/plain;charset=UTF-8",
+                "User-Agent":
+                  "TerreniReady/0.1 (+https://terreniready.onrender.com; repo:https://github.com/dedoitalia/terreniready)",
+              },
+              body: query,
+            });
+          } finally {
+            clearTimeout(timeoutId);
+          }
+
+          if (response.status === 429) {
+            sawRateLimit = true;
+            endpointCooldowns.set(
+              endpoint,
+              Date.now() + parseRetryAfterMs(response.headers.get("retry-after")),
+            );
+            lastError = new Error(`${endpoint} responded with 429`);
+            reportProgress(
+              reporter,
+              `${contextLabel ?? "Query"}: ${hostname} (${role}) ha risposto 429, passo al prossimo endpoint.`,
+            );
+            await delay(ENDPOINT_RETRY_DELAY_MS);
+            continue;
+          }
+
+          if (!response.ok) {
+            lastError = new Error(`${endpoint} responded with ${response.status}`);
+            reportProgress(
+              reporter,
+              `${contextLabel ?? "Query"}: ${hostname} (${role}) ha risposto ${response.status}, provo il prossimo endpoint.`,
+            );
+            continue;
+          }
+
+          const json = (await response.json()) as OverpassResponse;
+
+          if (!Array.isArray(json.elements)) {
+            lastError = new Error(`${endpoint} returned an invalid payload`);
+            continue;
+          }
+
+          overpassCache.set(query, {
+            expiresAt: Date.now() + OVERPASS_CACHE_TTL_MS,
+            value: json,
           });
-        } finally {
-          clearTimeout(timeoutId);
-        }
 
-        if (response.status === 429) {
-          sawRateLimit = true;
-          endpointCooldowns.set(
-            endpoint,
-            Date.now() + parseRetryAfterMs(response.headers.get("retry-after")),
-          );
-          lastError = new Error(`${endpoint} responded with 429`);
-          reportProgress(
-            reporter,
-            `${contextLabel ?? "Query"}: ${hostname} (${role}) ha risposto 429, passo al prossimo endpoint.`,
-          );
-          await delay(ENDPOINT_RETRY_DELAY_MS);
-          continue;
-        }
+          return json;
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") {
+            endpointCooldowns.set(
+              endpoint,
+              Date.now() + DEFAULT_ENDPOINT_COOLDOWN_MS,
+            );
+            lastError = new Error(
+              `${endpoint} timed out after ${OVERPASS_REQUEST_TIMEOUT_MS}ms`,
+            );
+            reportProgress(
+              reporter,
+              `${contextLabel ?? "Query"}: ${hostname} (${role}) non ha risposto entro ${Math.round(OVERPASS_REQUEST_TIMEOUT_MS / 1000)}s, provo il prossimo endpoint.`,
+            );
+            continue;
+          }
 
-        if (!response.ok) {
-          lastError = new Error(`${endpoint} responded with ${response.status}`);
-          reportProgress(
-            reporter,
-            `${contextLabel ?? "Query"}: ${hostname} (${role}) ha risposto ${response.status}, provo il prossimo endpoint.`,
-          );
-          continue;
-        }
-
-        const json = (await response.json()) as OverpassResponse;
-
-        if (!Array.isArray(json.elements)) {
-          lastError = new Error(`${endpoint} returned an invalid payload`);
-          continue;
-        }
-
-        overpassCache.set(query, {
-          expiresAt: Date.now() + OVERPASS_CACHE_TTL_MS,
-          value: json,
-        });
-
-        return json;
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
           endpointCooldowns.set(
             endpoint,
             Date.now() + DEFAULT_ENDPOINT_COOLDOWN_MS,
           );
-          lastError = new Error(`${endpoint} timed out after ${OVERPASS_REQUEST_TIMEOUT_MS}ms`);
+          lastError =
+            error instanceof Error ? error : new Error("Unknown Overpass error");
           reportProgress(
             reporter,
-            `${contextLabel ?? "Query"}: ${hostname} (${role}) non ha risposto entro ${Math.round(OVERPASS_REQUEST_TIMEOUT_MS / 1000)}s, provo il prossimo endpoint.`,
+            `${contextLabel ?? "Query"}: errore rete su ${hostname} (${role}), provo il prossimo endpoint.`,
           );
-          continue;
         }
+      }
 
-        endpointCooldowns.set(
-          endpoint,
-          Date.now() + DEFAULT_ENDPOINT_COOLDOWN_MS,
-        );
-        lastError =
-          error instanceof Error ? error : new Error("Unknown Overpass error");
+      if (cycle < OVERPASS_MAX_CYCLES - 1 && (attemptedInCycle || sawRateLimit)) {
         reportProgress(
           reporter,
-          `${contextLabel ?? "Query"}: errore rete su ${hostname} (${role}), provo il prossimo endpoint.`,
+          `${contextLabel ?? "Query"}: tutti gli endpoint hanno bisogno di respiro, attendo ${Math.round(OVERPASS_CYCLE_BACKOFF_MS / 1000)}s e riprovo.`,
         );
+        await delay(OVERPASS_CYCLE_BACKOFF_MS);
       }
     }
 
@@ -732,66 +785,107 @@ export async function runScan(
     throw new Error("Seleziona almeno una tipologia di fonte emissiva.");
   }
 
+  const scanCacheKey = buildScanCacheKey(provinces, categories);
+  const cachedScanResult = scanResultCache.get(scanCacheKey);
+
+  if (cachedScanResult && cachedScanResult.expiresAt > Date.now()) {
+    reportProgress(
+      reporter,
+      "Uso un risultato recente già disponibile per evitare nuova pressione su Overpass.",
+    );
+    return cloneScanResponse(cachedScanResult.value);
+  }
+
   reportProgress(
     reporter,
     `Scansione avviata su ${provinces.length} province e ${categories.length} categorie.`,
   );
 
-  const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
+  try {
+    const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
 
-  for (const provinceId of provinces) {
-    provinceResults.push(await scanProvince(provinceId, categories, reporter));
-  }
+    for (const provinceId of provinces) {
+      provinceResults.push(await scanProvince(provinceId, categories, reporter));
+    }
 
-  const sources = provinceResults
-    .flatMap((result) => result.sources)
-    .sort((left, right) => left.name.localeCompare(right.name, "it"));
+    const sources = provinceResults
+      .flatMap((result) => result.sources)
+      .sort((left, right) => left.name.localeCompare(right.name, "it"));
 
-  const terrains = provinceResults
-    .flatMap((result) => result.terrains)
-    .sort((left, right) => left.distanceMeters - right.distanceMeters);
-  warnings.push(...provinceResults.flatMap((result) => result.warnings));
+    const terrains = provinceResults
+      .flatMap((result) => result.terrains)
+      .sort((left, right) => left.distanceMeters - right.distanceMeters);
+    warnings.push(...provinceResults.flatMap((result) => result.warnings));
 
-  if (terrains.length > MAX_TERRAINS) {
-    warnings.push(
-      `Mostro i primi ${MAX_TERRAINS} terreni ordinati per prossimità. Raffina le province per un set più mirato.`,
+    if (terrains.length > MAX_TERRAINS) {
+      warnings.push(
+        `Mostro i primi ${MAX_TERRAINS} terreni ordinati per prossimità. Raffina le province per un set più mirato.`,
+      );
+    }
+
+    if (sources.length === 0) {
+      warnings.push(
+        `Nessuna fonte OSM trovata nelle province selezionate. Prova con ${provinceName("FI")}, ${provinceName("PI")} o ${provinceName("PT")}.`,
+      );
+    }
+
+    if (sources.length > 0 && terrains.length === 0) {
+      warnings.push(
+        "Le fonti sono state trovate, ma non sono emersi poligoni agricoli OSM entro 350 m nel set corrente.",
+      );
+    }
+
+    if (overpassCache.size > 0) {
+      warnings.push(
+        "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
+      );
+    }
+
+    reportProgress(
+      reporter,
+      `Scansione completata: ${sources.length} fonti e ${Math.min(terrains.length, MAX_TERRAINS)} terreni restituiti.`,
     );
+
+    const result = {
+      sources,
+      terrains: terrains.slice(0, MAX_TERRAINS),
+      meta: {
+        queryAt: new Date().toISOString(),
+        radiusMeters: SEARCH_RADIUS_METERS,
+        selectedProvinceIds: provinces,
+        selectedCategoryIds: categories,
+        totalSources: sources.length,
+        totalTerrains: terrains.length,
+        warnings,
+      },
+    } satisfies ScanResponse;
+
+    scanResultCache.set(scanCacheKey, {
+      expiresAt: Date.now() + SCAN_RESULT_CACHE_TTL_MS,
+      value: cloneScanResponse(result),
+    });
+
+    return result;
+  } catch (error) {
+    if (
+      cachedScanResult?.value &&
+      isRecoverableOverpassError(error)
+    ) {
+      reportProgress(
+        reporter,
+        "Le sorgenti pubbliche sono sature: restituisco l'ultimo risultato utile disponibile da cache.",
+      );
+
+      const cachedResult = cloneScanResponse(cachedScanResult.value);
+      cachedResult.meta.queryAt = new Date().toISOString();
+      cachedResult.meta.warnings = [
+        "Risultato restituito da cache precedente perché Overpass è temporaneamente saturo.",
+        ...cachedResult.meta.warnings,
+      ];
+
+      return cachedResult;
+    }
+
+    throw error;
   }
-
-  if (sources.length === 0) {
-    warnings.push(
-      `Nessuna fonte OSM trovata nelle province selezionate. Prova con ${provinceName("FI")}, ${provinceName("PI")} o ${provinceName("PT")}.`,
-    );
-  }
-
-  if (sources.length > 0 && terrains.length === 0) {
-    warnings.push(
-      "Le fonti sono state trovate, ma non sono emersi poligoni agricoli OSM entro 350 m nel set corrente.",
-    );
-  }
-
-  if (overpassCache.size > 0) {
-    warnings.push(
-      "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
-    );
-  }
-
-  reportProgress(
-    reporter,
-    `Scansione completata: ${sources.length} fonti e ${Math.min(terrains.length, MAX_TERRAINS)} terreni restituiti.`,
-  );
-
-  return {
-    sources,
-    terrains: terrains.slice(0, MAX_TERRAINS),
-    meta: {
-      queryAt: new Date().toISOString(),
-      radiusMeters: SEARCH_RADIUS_METERS,
-      selectedProvinceIds: provinces,
-      selectedCategoryIds: categories,
-      totalSources: sources.length,
-      totalTerrains: terrains.length,
-      warnings,
-    },
-  };
 }
