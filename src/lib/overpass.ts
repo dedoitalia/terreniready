@@ -33,6 +33,7 @@ const OVERPASS_ENDPOINTS = [
 
 const SEARCH_RADIUS_METERS = 350;
 const MAX_TERRAINS = 250;
+const TERRAIN_FILTER_BATCH_SIZE = 320;
 const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
@@ -1104,23 +1105,55 @@ async function scanProvince(
   const terrainCandidates = terrainLookup.terrains.sort(
     (left, right) => left.distanceMeters - right.distanceMeters,
   );
+  const terrainCandidateBatches = chunkArray(
+    terrainCandidates,
+    TERRAIN_FILTER_BATCH_SIZE,
+  );
+  const filteredTerrains: TerrainFeature[] = [];
+  const provinceWarnings: string[] = [];
+  const provinceNotes: string[] = [];
 
   reportProgress(
     reporter,
     `${province.name}: particelle preliminari prima del filtro urbano ${terrainCandidates.length}.`,
   );
 
-  const obstacleLookup = await fetchTerrainObstaclesForProvince(
-    provinceId,
-    terrainCandidates,
-    reporter,
-  );
-  const terrainFilter = filterTerrainsByObstacles(
-    terrainCandidates,
-    obstacleLookup,
-    reporter,
-  );
-  const terrains = terrainFilter.terrains
+  for (const [batchIndex, terrainBatch] of terrainCandidateBatches.entries()) {
+    reportProgress(
+      reporter,
+      `${province.name}: filtro urbano batch ${batchIndex + 1}/${terrainCandidateBatches.length} su ${terrainBatch.length} particelle.`,
+    );
+
+    const obstacleLookup = await fetchTerrainObstaclesForProvince(
+      provinceId,
+      terrainBatch,
+      reporter,
+    );
+    const terrainFilter = filterTerrainsByObstacles(
+      terrainBatch,
+      obstacleLookup,
+      reporter,
+    );
+
+    filteredTerrains.push(...terrainFilter.terrains);
+
+    if (obstacleLookup.warning) {
+      provinceWarnings.push(obstacleLookup.warning);
+    }
+
+    if (filteredTerrains.length >= MAX_TERRAINS) {
+      provinceNotes.push(
+        `${province.name}: filtro urbano arrestato dopo i primi ${filteredTerrains.length} terreni compatibili per mantenere il run reattivo.`,
+      );
+      reportProgress(
+        reporter,
+        `${province.name}: trovato un set sufficiente di terreni vicini, interrompo i batch residui per velocizzare la risposta.`,
+      );
+      break;
+    }
+  }
+
+  const terrains = filteredTerrains
     .sort((left, right) => left.distanceMeters - right.distanceMeters);
 
   reportProgress(
@@ -1131,9 +1164,10 @@ async function scanProvince(
   return {
     sources,
     terrains,
-    warnings: [terrainLookup.warning, obstacleLookup.warning].filter(
+    warnings: [terrainLookup.warning, ...provinceWarnings].filter(
       (warning): warning is string => Boolean(warning),
     ),
+    notes: provinceNotes,
   };
 }
 
@@ -1200,6 +1234,7 @@ export async function runScan(
         .flatMap((result) => result.terrains)
         .sort((left, right) => left.distanceMeters - right.distanceMeters);
       warnings.push(...provinceResults.flatMap((result) => result.warnings));
+      notes.push(...provinceResults.flatMap((result) => result.notes));
 
       if (terrains.length > MAX_TERRAINS) {
         warnings.push(
