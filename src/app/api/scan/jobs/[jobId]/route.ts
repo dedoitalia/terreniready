@@ -16,7 +16,13 @@ export async function GET(
   const job = getScanJob(jobId);
 
   if (!job) {
-    return Response.json({ error: "Job non trovato." }, { status: 404 });
+    return Response.json(
+      {
+        error:
+          "Sessione di scansione non più disponibile. Aggiorna la pagina e usa la scansione live.",
+      },
+      { status: 410 },
+    );
   }
 
   return Response.json(job);

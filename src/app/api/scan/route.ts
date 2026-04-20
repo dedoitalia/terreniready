@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 
+import { formatScanErrorMessage } from "@/lib/scan-error-message";
 import { runScan } from "@/lib/overpass";
 import type { ScanRequest } from "@/types/scan";
 
@@ -14,16 +15,9 @@ export async function POST(request: NextRequest) {
 
     return Response.json(response);
   } catch (error) {
-    const rawMessage =
-      error instanceof Error
-        ? error.message
-        : "Impossibile completare la scansione.";
-    const message =
-      rawMessage.includes("responded with 429") ||
-      rawMessage.toLowerCase().includes("rate limit")
-        ? "Le sorgenti OpenStreetMap sono temporaneamente sature. Riprova tra 1-2 minuti."
-        : rawMessage;
-
-    return Response.json({ error: message }, { status: 400 });
+    return Response.json(
+      { error: formatScanErrorMessage(error) },
+      { status: 400 },
+    );
   }
 }

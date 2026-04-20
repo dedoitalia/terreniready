@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import JSZip from "jszip";
-import { startTransition, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { PROVINCES, PROVINCE_MAP } from "@/lib/province-data";
 import {
@@ -12,9 +12,9 @@ import {
 } from "@/lib/source-types";
 import type {
   ProvinceId,
-  ScanJobCreateResponse,
-  ScanJobSnapshot,
+  ScanJobLogEntry,
   ScanResponse,
+  ScanStreamEvent,
   SourceCategoryId,
   TerrainFeature,
 } from "@/types/scan";
@@ -29,8 +29,12 @@ const TerrainMap = dynamic(() => import("@/components/terrain-map"), {
 });
 
 const LONG_SCAN_THRESHOLD_SECONDS = 180;
-const POLL_INTERVAL_MS = 1200;
-const EXTENDED_POLL_INTERVAL_MS = 2500;
+
+type LiveScanState = {
+  status: "running" | "completed" | "failed";
+  logs: ScanJobLogEntry[];
+  error: string | null;
+};
 
 function toggleItem<T extends string>(list: T[], value: T) {
   return list.includes(value)
@@ -62,7 +66,7 @@ function downloadBlob(contents: BlobPart, mimeType: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function safeParseJson<T>(raw: string): T | null {
+function parseStreamPayload<T>(raw: string) {
   if (!raw.trim()) {
     return null;
   }
@@ -74,111 +78,31 @@ function safeParseJson<T>(raw: string): T | null {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-function isTransientResponse(
-  status: number,
-  raw: string,
-  contentType: string | null,
-) {
-  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) {
-    return true;
-  }
-
-  if (!raw.trim()) {
-    return true;
-  }
-
-  const normalizedContentType = contentType?.toLowerCase() ?? "";
-  const normalizedRaw = raw.trim().toLowerCase();
-
-  if (normalizedContentType.includes("text/html")) {
-    return true;
-  }
-
-  return (
-    normalizedRaw.startsWith("<!doctype html") ||
-    normalizedRaw.startsWith("<html") ||
-    normalizedRaw.includes("<body")
-  );
-}
-
-function buildStartErrorMessage(
-  status: number,
-  raw: string,
-  contentType: string | null,
-  apiError?: string,
-) {
-  if (apiError) {
-    return apiError;
-  }
-
-  if (status === 429) {
-    return "Il motore di scansione è temporaneamente saturo. Riprova tra pochi secondi.";
-  }
-
-  if (isTransientResponse(status, raw, contentType)) {
-    return "Il server si sta riattivando o sta completando un aggiornamento. Riprova tra 10-20 secondi.";
-  }
-
-  return "Il server non ha restituito una risposta valida. Riprova tra pochi secondi.";
-}
-
-async function startScanJobWithRetry(
+function buildScanStreamUrl(
   provinceIds: ProvinceId[],
   categoryIds: SourceCategoryId[],
 ) {
-  let lastError: Error | null = null;
+  const params = new URLSearchParams();
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const startResponse = await fetch("/api/scan/jobs", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        provinceIds,
-        categoryIds,
-      }),
-    });
+  provinceIds.forEach((provinceId) => {
+    params.append("provinceIds", provinceId);
+  });
+  categoryIds.forEach((categoryId) => {
+    params.append("categoryIds", categoryId);
+  });
 
-    const startRaw = await startResponse.text();
-    const startPayload = safeParseJson<ScanJobCreateResponse & { error?: string }>(
-      startRaw,
-    );
+  return `/api/scan/stream?${params.toString()}`;
+}
 
-    if (startResponse.ok && startPayload?.jobId) {
-      return startPayload.jobId;
-    }
-
-    lastError = new Error(
-      buildStartErrorMessage(
-        startResponse.status,
-        startRaw,
-        startResponse.headers.get("content-type"),
-        startPayload?.error,
-      ),
-    );
-
-    if (
-      attempt === 2 ||
-      !isTransientResponse(
-        startResponse.status,
-        startRaw,
-        startResponse.headers.get("content-type"),
-      )
-    ) {
-      throw lastError;
-    }
-
-    await sleep(1400 * (attempt + 1));
-  }
-
-  throw lastError ?? new Error("Impossibile avviare la scansione.");
+function appendLogEntry(
+  previous: LiveScanState | null,
+  entry: ScanJobLogEntry,
+): LiveScanState {
+  return {
+    status: previous?.status ?? "running",
+    error: previous?.error ?? null,
+    logs: [...(previous?.logs ?? []), entry].slice(-120),
+  };
 }
 
 function buildCsv(data: ScanResponse) {
@@ -273,11 +197,12 @@ export default function TerreniDashboard() {
     ["fuel", "bodyshop", "repair"],
   );
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
-  const [scanJob, setScanJob] = useState<ScanJobSnapshot | null>(null);
+  const [scanJob, setScanJob] = useState<LiveScanState | null>(null);
   const [activeTerrainId, setActiveTerrainId] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const streamRef = useRef<EventSource | null>(null);
 
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
@@ -314,6 +239,12 @@ export default function TerreniDashboard() {
     };
   }, [loading]);
 
+  useEffect(() => {
+    return () => {
+      streamRef.current?.close();
+    };
+  }, []);
+
   async function runScan() {
     if (selectedProvinceIds.length === 0) {
       setError("Seleziona almeno una provincia.");
@@ -328,95 +259,114 @@ export default function TerreniDashboard() {
     setLoading(true);
     setLoadingSeconds(0);
     setError(null);
-    setScanJob(null);
-
-    startTransition(() => {
-      void (async () => {
-        try {
-          const jobId = await startScanJobWithRetry(
-            selectedProvinceIds,
-            selectedCategoryIds,
-          );
-
-          const startedAt = Date.now();
-
-          while (true) {
-            const statusResponse = await fetch(`/api/scan/jobs/${jobId}`, {
-              cache: "no-store",
-            });
-            const statusRaw = await statusResponse.text();
-            const snapshot = safeParseJson<ScanJobSnapshot & { error?: string }>(
-              statusRaw,
-            );
-            const contentType = statusResponse.headers.get("content-type");
-
-            if (!statusResponse.ok) {
-              if (
-                isTransientResponse(
-                  statusResponse.status,
-                  statusRaw,
-                  contentType,
-                )
-              ) {
-                await sleep(1500);
-                continue;
-              }
-
-              throw new Error(
-                snapshot?.error ??
-                  "Il job di scansione non è più disponibile. Riprova.",
-              );
-            }
-
-            if (!snapshot) {
-              if (
-                isTransientResponse(
-                  statusResponse.status,
-                  statusRaw,
-                  contentType,
-                )
-              ) {
-                await sleep(1500);
-                continue;
-              }
-
-              throw new Error("Lo stato della scansione non è leggibile. Riprova tra pochi secondi.");
-            }
-
-            setScanJob(snapshot);
-
-            if (snapshot.status === "completed" && snapshot.result) {
-              setScanData(snapshot.result);
-              setActiveTerrainId(snapshot.result.terrains[0]?.id);
-              setLoading(false);
-              setLoadingSeconds(0);
-              return;
-            }
-
-            if (snapshot.status === "failed") {
-              throw new Error(
-                snapshot.error ?? "La scansione si è interrotta sul server.",
-              );
-            }
-
-            await sleep(
-              Date.now() - startedAt >= LONG_SCAN_THRESHOLD_SECONDS * 1000
-                ? EXTENDED_POLL_INTERVAL_MS
-                : POLL_INTERVAL_MS,
-            );
-          }
-        } catch (scanError) {
-          setError(
-            scanError instanceof Error
-              ? scanError.message
-              : "Errore durante la scansione.",
-          );
-        } finally {
-          setLoadingSeconds(0);
-          setLoading(false);
-        }
-      })();
+    setScanJob({
+      status: "running",
+      logs: [],
+      error: null,
     });
+
+    streamRef.current?.close();
+    const eventSource = new EventSource(
+      buildScanStreamUrl(selectedProvinceIds, selectedCategoryIds),
+    );
+    streamRef.current = eventSource;
+
+    const closeCurrentStream = () => {
+      if (streamRef.current === eventSource) {
+        streamRef.current = null;
+      }
+
+      eventSource.close();
+    };
+
+    eventSource.addEventListener("log", (event) => {
+      const payload = parseStreamPayload<ScanStreamEvent>(
+        (event as MessageEvent<string>).data,
+      );
+
+      if (!payload || payload.type !== "log") {
+        return;
+      }
+
+      setScanJob((current) => appendLogEntry(current, payload.entry));
+    });
+
+    eventSource.addEventListener("status", (event) => {
+      const payload = parseStreamPayload<ScanStreamEvent>(
+        (event as MessageEvent<string>).data,
+      );
+
+      if (!payload || payload.type !== "status") {
+        return;
+      }
+
+      setScanJob((current) => ({
+        status: payload.status,
+        error: current?.error ?? null,
+        logs: current?.logs ?? [],
+      }));
+    });
+
+    eventSource.addEventListener("result", (event) => {
+      const payload = parseStreamPayload<ScanStreamEvent>(
+        (event as MessageEvent<string>).data,
+      );
+
+      if (!payload || payload.type !== "result") {
+        return;
+      }
+
+      setScanData(payload.result);
+      setActiveTerrainId(payload.result.terrains[0]?.id);
+      setLoading(false);
+      setLoadingSeconds(0);
+      setScanJob((current) => ({
+        status: "completed",
+        error: null,
+        logs: current?.logs ?? [],
+      }));
+      closeCurrentStream();
+    });
+
+    eventSource.addEventListener("scan-error", (event) => {
+      const payload = parseStreamPayload<ScanStreamEvent>(
+        (event as MessageEvent<string>).data,
+      );
+
+      const message =
+        payload && payload.type === "scan-error"
+          ? payload.message
+          : "La scansione si è interrotta sul server.";
+
+      setError(message);
+      setLoading(false);
+      setLoadingSeconds(0);
+      setScanJob((current) => ({
+        status: "failed",
+        error: message,
+        logs: current?.logs ?? [],
+      }));
+      closeCurrentStream();
+    });
+
+    eventSource.onerror = () => {
+      if (streamRef.current !== eventSource) {
+        return;
+      }
+
+      const message =
+        "La connessione live con il motore di scansione si è interrotta. Riprova.";
+
+      setError(message);
+      setLoading(false);
+      setLoadingSeconds(0);
+      setScanJob((current) => ({
+        status: "failed",
+        error: message,
+        logs: current?.logs ?? [],
+      }));
+      closeCurrentStream();
+    };
   }
 
   return (

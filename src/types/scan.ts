@@ -104,3 +104,26 @@ export type ScanJobSnapshot = {
 export type ScanJobCreateResponse = {
   jobId: string;
 };
+
+export type ScanStreamEvent =
+  | {
+      type: "status";
+      status: "running" | "completed" | "failed";
+      timestamp: string;
+    }
+  | {
+      type: "log";
+      entry: ScanJobLogEntry;
+    }
+  | {
+      type: "result";
+      result: ScanResponse;
+    }
+  | {
+      type: "scan-error";
+      message: string;
+    }
+  | {
+      type: "heartbeat";
+      timestamp: string;
+    };
