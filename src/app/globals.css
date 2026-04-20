@@ -1,25 +1,34 @@
 @import "tailwindcss";
 
 :root {
-  --background: #e7e2d7;
-  --foreground: #122016;
-  --muted: #5b6d5d;
-  --muted-strong: #26372a;
-  --panel: rgba(246, 240, 228, 0.84);
-  --panel-soft: rgba(255, 255, 255, 0.56);
-  --line: rgba(27, 40, 29, 0.12);
-  --line-soft: rgba(255, 255, 255, 0.3);
-  --accent: #d2bf6d;
-  --accent-strong: #8da56e;
-  --accent-clay: #af684d;
-  --danger: #a54e45;
-  --shadow: 0 26px 80px rgba(25, 34, 27, 0.12);
+  --background: #f5f0e6;
+  --background-strong: #e6ddce;
+  --foreground: #18231b;
+  --muted: #657465;
+  --muted-strong: #2d3b31;
+  --panel: rgba(255, 251, 245, 0.88);
+  --panel-soft: rgba(255, 255, 255, 0.64);
+  --panel-dark: rgba(20, 31, 24, 0.94);
+  --line: rgba(23, 35, 27, 0.11);
+  --line-strong: rgba(23, 35, 27, 0.18);
+  --line-soft: rgba(255, 255, 255, 0.22);
+  --accent: #c97e38;
+  --accent-soft: #f0d7b3;
+  --accent-strong: #7f9d72;
+  --accent-ink: #283d32;
+  --danger: #9e5845;
+  --shadow: 0 26px 80px rgba(33, 44, 35, 0.09);
+  --shadow-strong: 0 34px 120px rgba(21, 30, 24, 0.22);
+  --radius-xl: 34px;
+  --radius-lg: 28px;
+  --radius-md: 22px;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-space-grotesk);
+  --font-serif: var(--font-newsreader);
   --font-mono: var(--font-ibm-plex-mono);
 }
 
@@ -28,7 +37,7 @@
 }
 
 *::selection {
-  background: rgba(210, 191, 109, 0.35);
+  background: rgba(201, 126, 56, 0.24);
   color: var(--foreground);
 }
 
@@ -40,9 +49,9 @@ body {
   position: relative;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(219, 196, 107, 0.3), transparent 32%),
-    radial-gradient(circle at top right, rgba(89, 123, 95, 0.16), transparent 28%),
-    linear-gradient(180deg, #f3eddf 0%, #ebe6da 48%, #e2ddd2 100%);
+    radial-gradient(circle at top left, rgba(233, 180, 113, 0.18), transparent 24%),
+    radial-gradient(circle at right 18%, rgba(121, 154, 120, 0.16), transparent 28%),
+    linear-gradient(180deg, #f8f3ea 0%, #f1eadf 38%, #ebe3d7 100%);
   color: var(--foreground);
   font-family: var(--font-space-grotesk), sans-serif;
 }
@@ -52,12 +61,24 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background-image:
-    linear-gradient(rgba(28, 43, 30, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(28, 43, 30, 0.04) 1px, transparent 1px);
-  background-size: 112px 112px;
-  mask-image: radial-gradient(circle at top, black 25%, transparent 78%);
-  opacity: 0.5;
+  background:
+    linear-gradient(rgba(25, 38, 29, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(25, 38, 29, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.46), transparent 54%);
+  background-size: 96px 96px, 96px 96px, auto;
+  mask-image: linear-gradient(180deg, black 18%, rgba(0, 0, 0, 0.3) 65%, transparent 100%);
+  opacity: 0.64;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(24, 35, 27, 0.035) 0.6px, transparent 0.6px);
+  background-size: 18px 18px;
+  mix-blend-mode: multiply;
+  opacity: 0.14;
 }
 
 a {
@@ -82,123 +103,170 @@ button {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.35);
 }
 
 ::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(38, 55, 42, 0.24);
+  background: rgba(45, 59, 49, 0.22);
   background-clip: padding-box;
+}
+
+.terrain-display-title,
+.terrain-section-title,
+.terrain-panel-title {
+  font-family: var(--font-newsreader), serif;
+  font-weight: 600;
+  letter-spacing: -0.05em;
+}
+
+.terrain-display-title {
+  line-height: 0.92;
+  text-wrap: balance;
+}
+
+.terrain-section-title {
+  line-height: 0.96;
+}
+
+.terrain-panel-title {
+  line-height: 1;
 }
 
 .terrain-shell {
   position: relative;
-  border: 1px solid var(--line);
-  border-radius: 34px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(240, 233, 220, 0.9));
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
-}
-
-.terrain-shell-hero {
   overflow: hidden;
-  border-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
   background:
-    radial-gradient(circle at top left, rgba(212, 191, 108, 0.15), transparent 28%),
-    linear-gradient(135deg, rgba(19, 30, 22, 0.97), rgba(35, 52, 35, 0.94) 48%, rgba(64, 82, 55, 0.9) 100%);
-  box-shadow: 0 32px 90px rgba(15, 20, 16, 0.3);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(249, 244, 235, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    var(--shadow);
+  backdrop-filter: blur(16px);
 }
 
-.terrain-shell-hero::before {
+.terrain-shell::before {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image:
-    radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.08), transparent 34%),
-    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
-  background-size: auto, 110px 110px, 110px 110px;
-  mask-image: linear-gradient(180deg, black, rgba(0, 0, 0, 0.25));
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.24), transparent 42%);
+  opacity: 0.8;
+}
+
+.terrain-shell-hero {
+  border-color: rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at 16% 18%, rgba(236, 186, 120, 0.16), transparent 24%),
+    radial-gradient(circle at 86% 22%, rgba(125, 157, 114, 0.16), transparent 28%),
+    linear-gradient(135deg, rgba(16, 26, 21, 0.98), rgba(27, 42, 31, 0.96) 42%, rgba(49, 67, 52, 0.94) 100%);
+  box-shadow: var(--shadow-strong);
+}
+
+.terrain-shell-hero::before {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.08), transparent 32%);
+  background-size: 118px 118px, 118px 118px, auto;
+  mask-image: linear-gradient(180deg, black, rgba(0, 0, 0, 0.28));
 }
 
 .terrain-shell-dark {
   background:
-    linear-gradient(180deg, rgba(20, 31, 22, 0.96), rgba(29, 43, 31, 0.94));
+    radial-gradient(circle at top, rgba(233, 180, 113, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(19, 30, 23, 0.98), rgba(26, 38, 30, 0.96));
   border-color: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 28px 80px rgba(14, 19, 16, 0.26);
+  box-shadow: 0 28px 84px rgba(14, 20, 16, 0.24);
 }
 
 .terrain-keyline {
   display: inline-flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.85rem;
   font-family: var(--font-ibm-plex-mono), monospace;
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .terrain-keyline::before {
   content: "";
-  width: 2.5rem;
+  width: 2.75rem;
   height: 1px;
   background: currentColor;
-  opacity: 0.58;
+  opacity: 0.62;
 }
 
 .terrain-keyline-dark {
-  color: rgba(220, 231, 215, 0.76);
+  color: rgba(224, 233, 220, 0.72);
+}
+
+.terrain-copy-lg {
+  font-size: 1.03rem;
+  line-height: 1.82;
 }
 
 .terrain-chip {
   display: inline-flex;
   align-items: center;
-  border: 1px solid rgba(28, 43, 30, 0.1);
+  gap: 0.45rem;
+  border: 1px solid rgba(27, 39, 31, 0.1);
   border-radius: 999px;
-  padding: 0.55rem 0.95rem;
-  background: rgba(255, 255, 255, 0.56);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
+  padding: 0.68rem 1.05rem;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--muted-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
 }
 
 .terrain-chip-dark {
   border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.08);
-  color: #eef2e7;
+  background: rgba(255, 255, 255, 0.09);
+  color: #f2f4ec;
+  box-shadow: none;
 }
 
 .terrain-button-primary,
-.terrain-button-secondary {
+.terrain-button-secondary,
+.terrain-button-accent,
+.terrain-button-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 22px;
-  padding: 1rem 1.2rem;
-  font-size: 14px;
-  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.95rem 1.28rem;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   transition:
     transform 180ms ease,
     background 180ms ease,
     border-color 180ms ease,
+    color 180ms ease,
     opacity 180ms ease;
 }
 
 .terrain-button-primary:hover,
-.terrain-button-secondary:hover {
+.terrain-button-secondary:hover,
+.terrain-button-accent:hover,
+.terrain-button-ghost:hover {
   transform: translateY(-1px);
 }
 
 .terrain-button-primary:disabled,
-.terrain-button-secondary:disabled {
+.terrain-button-secondary:disabled,
+.terrain-button-accent:disabled,
+.terrain-button-ghost:disabled {
   cursor: not-allowed;
   opacity: 0.5;
   transform: none;
@@ -206,60 +274,184 @@ button {
 
 .terrain-button-primary {
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(135deg, #132016, #273b29);
-  color: white;
-  box-shadow: 0 18px 40px rgba(11, 20, 13, 0.18);
+  background: linear-gradient(135deg, #d08741, #be6f2d);
+  color: #fff8f1;
+  box-shadow: 0 20px 44px rgba(128, 73, 24, 0.26);
 }
 
 .terrain-button-secondary {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.74);
   color: var(--muted-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
 }
 
 .terrain-button-secondary-dark {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
-  color: #edf2e8;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #edf2e6;
+  box-shadow: none;
 }
 
 .terrain-stat-card {
+  min-height: 13.5rem;
   border: 1px solid var(--line);
-  border-radius: 28px;
-  padding: 1.35rem;
+  border-radius: 30px;
+  padding: 1.55rem;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(244, 239, 230, 0.88));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(249, 244, 236, 0.92));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    0 18px 48px rgba(25, 34, 27, 0.07);
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 18px 48px rgba(30, 41, 33, 0.08);
 }
 
 .terrain-mini-card {
   display: flex;
-  min-height: 9.75rem;
+  min-height: 11rem;
   flex-direction: column;
   justify-content: flex-start;
-  padding: 1rem;
+  padding: 1.15rem;
   border: 1px solid var(--line);
-  border-radius: 26px;
-  background: rgba(255, 255, 255, 0.54);
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(249, 244, 236, 0.92));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.76),
-    0 14px 36px rgba(25, 34, 27, 0.06);
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 16px 42px rgba(30, 41, 33, 0.06);
 }
 
 .terrain-inline-pill {
   display: inline-flex;
   align-items: center;
-  border: 1px solid rgba(18, 30, 21, 0.1);
+  border: 1px solid rgba(24, 35, 27, 0.08);
   border-radius: 999px;
-  padding: 0.42rem 0.78rem;
-  background: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
-  font-weight: 500;
+  padding: 0.48rem 0.82rem;
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  font-weight: 600;
   line-height: 1.2;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--muted-strong);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.terrain-hero-panel {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 30px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.terrain-hero-panel-dark {
+  background: linear-gradient(180deg, rgba(9, 14, 11, 0.18), rgba(255, 255, 255, 0.03));
+}
+
+.terrain-hero-kpi {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 26px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.terrain-choice-card {
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(248, 243, 234, 0.92));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 12px 30px rgba(31, 42, 34, 0.05);
+}
+
+.terrain-choice-card:hover {
+  border-color: rgba(39, 56, 44, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(251, 248, 241, 0.96));
+}
+
+.terrain-choice-card-active {
+  border-color: rgba(215, 154, 88, 0.28);
+  background:
+    linear-gradient(135deg, rgba(35, 53, 41, 0.98), rgba(52, 72, 56, 0.96)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+  box-shadow: 0 22px 40px rgba(28, 37, 31, 0.18);
+}
+
+.terrain-warning-banner {
+  border-color: rgba(172, 123, 54, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 249, 235, 0.96), rgba(247, 237, 210, 0.92));
+  color: #76561a;
+}
+
+.terrain-note-banner {
+  border-color: rgba(52, 71, 57, 0.12);
+  background:
+    linear-gradient(180deg, rgba(245, 247, 241, 0.96), rgba(236, 240, 230, 0.92));
+  color: var(--muted-strong);
+}
+
+.terrain-select {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(246, 241, 232, 0.96));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.terrain-ledger-table {
+  border-collapse: separate;
+  border-spacing: 0 0.8rem;
+}
+
+.terrain-dossier-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.04));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.terrain-dossier-card-soft {
+  border-radius: 24px;
+}
+
+.terrain-preview-shell {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at top, rgba(233, 180, 113, 0.08), transparent 24%),
+    linear-gradient(180deg, rgba(19, 30, 23, 0.98), rgba(24, 38, 29, 0.96));
+  box-shadow: 0 38px 120px rgba(10, 17, 12, 0.45);
+}
+
+.terrain-map-frame {
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  border-radius: 32px;
+  background: #dbe1d7;
+  box-shadow: 0 30px 80px rgba(28, 39, 31, 0.16);
+}
+
+.terrain-map-overlay {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px;
+  background: rgba(21, 32, 25, 0.84);
+  color: #f0f4eb;
+  box-shadow: 0 18px 44px rgba(16, 22, 18, 0.26);
+  backdrop-filter: blur(16px);
+}
+
+.terrain-map-overlay-light {
+  background: rgba(255, 249, 240, 0.94);
+  color: var(--muted-strong);
+  border-color: rgba(24, 35, 27, 0.1);
+  box-shadow: 0 18px 40px rgba(24, 35, 27, 0.14);
+}
+
+.terrain-map-overlay-stat {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 @media (min-width: 1280px) {
@@ -272,24 +464,24 @@ button {
 
 .leaflet-container {
   font-family: var(--font-space-grotesk), sans-serif;
-  background: #d6ddd1;
+  background: #dbe1d7;
 }
 
 .leaflet-control-layers {
-  border: 1px solid rgba(18, 30, 21, 0.12) !important;
-  border-radius: 18px !important;
-  background: rgba(247, 242, 233, 0.94) !important;
-  box-shadow: 0 18px 48px rgba(18, 29, 20, 0.18) !important;
+  border: 1px solid rgba(24, 35, 27, 0.12) !important;
+  border-radius: 20px !important;
+  background: rgba(255, 251, 245, 0.96) !important;
+  box-shadow: 0 20px 48px rgba(18, 29, 20, 0.18) !important;
   overflow: hidden;
 }
 
 .leaflet-control-layers-toggle {
-  border-radius: 14px !important;
+  border-radius: 16px !important;
 }
 
 .leaflet-popup-content-wrapper {
-  border-radius: 20px !important;
-  background: rgba(249, 244, 235, 0.96) !important;
+  border-radius: 22px !important;
+  background: rgba(255, 250, 243, 0.98) !important;
   box-shadow: 0 22px 60px rgba(15, 20, 16, 0.18) !important;
 }
 
@@ -298,7 +490,7 @@ button {
 }
 
 .leaflet-popup-tip {
-  background: rgba(249, 244, 235, 0.96) !important;
+  background: rgba(255, 250, 243, 0.98) !important;
 }
 
 .leaflet-control-attribution {

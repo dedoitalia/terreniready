@@ -103,7 +103,7 @@ export default function TerrainMap({
   const activeTerrain = terrains.find((terrain) => terrain.id === activeTerrainId);
 
   return (
-    <div className="relative h-[64vh] overflow-hidden rounded-[30px] border border-[rgba(255,255,255,0.56)] bg-[#d7ddd1] shadow-[0_30px_80px_rgba(28,39,31,0.16)] lg:h-[calc(100vh-14rem)]">
+    <div className="terrain-map-frame relative h-[64vh] overflow-hidden lg:h-[calc(100vh-14rem)]">
       <MapContainer
         bounds={[
           [43.58, 10.12],
@@ -170,7 +170,7 @@ export default function TerrainMap({
                       href={source.referenceUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex text-xs font-medium text-[#244c74] underline underline-offset-2"
+                      className="inline-flex text-xs font-medium text-[var(--accent-ink)] underline underline-offset-2"
                     >
                       Apri sorgente dati
                     </a>
@@ -216,33 +216,33 @@ export default function TerrainMap({
         })}
       </MapContainer>
 
-      <div className="pointer-events-none absolute left-4 top-4 max-w-sm rounded-[22px] border border-white/12 bg-[rgba(17,27,19,0.82)] px-4 py-3 text-white shadow-lg backdrop-blur">
-        <div className="text-[11px] uppercase tracking-[0.2em] text-[#a9bda5]">
+      <div className="terrain-map-overlay pointer-events-none absolute left-4 top-4 max-w-sm px-4 py-3">
+        <div className="text-[11px] uppercase tracking-[0.2em] text-[#b8c6b1]">
           Stage mappa
         </div>
-        <div className="mt-2 text-sm leading-6 text-[#edf3e8]">
+        <div className="mt-2 text-sm leading-6 text-[#eef4eb]">
           {selectedProvinceIds.length > 0
             ? selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].name).join(" · ")
             : "Toscana"}
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-[#d2ddcf]">
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="uppercase tracking-[0.18em] text-[#93aa8e]">Fonti</div>
+          <div className="terrain-map-overlay-stat px-3 py-2">
+            <div className="uppercase tracking-[0.18em] text-[#a5b69d]">Fonti</div>
             <div className="mt-1 text-sm font-semibold text-white">{sources.length}</div>
           </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="uppercase tracking-[0.18em] text-[#93aa8e]">Terreni</div>
+          <div className="terrain-map-overlay-stat px-3 py-2">
+            <div className="uppercase tracking-[0.18em] text-[#a5b69d]">Terreni</div>
             <div className="mt-1 text-sm font-semibold text-white">{terrains.length}</div>
           </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="uppercase tracking-[0.18em] text-[#93aa8e]">Buffer</div>
+          <div className="terrain-map-overlay-stat px-3 py-2">
+            <div className="uppercase tracking-[0.18em] text-[#a5b69d]">Buffer</div>
             <div className="mt-1 text-sm font-semibold text-white">350m</div>
           </div>
         </div>
       </div>
 
       {activeTerrain ? (
-        <div className="pointer-events-none absolute bottom-4 right-4 max-w-xs rounded-[22px] border border-white/12 bg-[rgba(255,248,234,0.92)] px-4 py-3 text-xs leading-5 text-[var(--muted-strong)] shadow-lg backdrop-blur">
+        <div className="terrain-map-overlay terrain-map-overlay-light pointer-events-none absolute bottom-4 right-4 max-w-xs px-4 py-3 text-xs leading-5">
           <div className="uppercase tracking-[0.2em] text-[var(--muted)]">
             Terreno attivo
           </div>
@@ -256,7 +256,7 @@ export default function TerrainMap({
         </div>
       ) : null}
 
-      <div className="pointer-events-none absolute bottom-4 left-4 max-w-xs rounded-[22px] border border-white/10 bg-[rgba(17,27,19,0.82)] px-4 py-3 text-xs leading-5 text-[#edf3e8] shadow-lg backdrop-blur">
+      <div className="terrain-map-overlay pointer-events-none absolute bottom-4 left-4 max-w-xs px-4 py-3 text-xs leading-5">
         Dati mappa: immagini satellitari Esri, particelle catastali WMS Agenzia
         delle Entrate, fonti da MIMIT e OpenStreetMap, particelle da WFS
         ufficiale con filtro anti-urbano geospaziale.

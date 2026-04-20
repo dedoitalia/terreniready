@@ -714,18 +714,18 @@ export default function TerreniDashboard() {
               </div>
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px] lg:items-end">
                 <div>
-                  <h1 className="max-w-5xl text-[clamp(2.85rem,5vw,5.35rem)] font-semibold leading-[0.94] tracking-[-0.055em] text-[#f6f2e8]">
+                  <h1 className="terrain-display-title max-w-5xl text-[clamp(2.85rem,5vw,5.35rem)] text-[#f6f2e8]">
                     Un atlante operativo per leggere territorio, particelle e
                     prossimità emissiva come un unico dossier.
                   </h1>
-                  <p className="mt-5 max-w-3xl text-base leading-7 text-[#d8e3d4] lg:text-lg">
+                  <p className="terrain-copy-lg mt-5 max-w-3xl text-[#dce6d7]">
                     Ho ricostruito il SaaS intorno alla filosofia già presente nel
                     prodotto: cartografia, agricoltura, catasto e analisi fondiaria.
                     Il risultato è una control room più netta, più editoriale e più
                     coerente in tutte le sue superfici.
                   </p>
                 </div>
-                <div className="rounded-[28px] border border-white/10 bg-white/6 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur">
+                <div className="terrain-hero-panel p-5">
                   <div className="terrain-keyline terrain-keyline-dark">
                     Workflow
                   </div>
@@ -754,11 +754,11 @@ export default function TerreniDashboard() {
             </div>
 
             <div className="grid gap-4">
-              <div className="rounded-[30px] border border-white/10 bg-black/12 p-5 backdrop-blur">
+              <div className="terrain-hero-panel terrain-hero-panel-dark p-5">
                 <div className="terrain-keyline terrain-keyline-dark">
                   Filosofia del tema
                 </div>
-                <h2 className="mt-4 text-2xl font-semibold tracking-[-0.04em] text-white">
+                <h2 className="terrain-panel-title mt-4 text-2xl text-white">
                   Territorio come tavolo operativo
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-[#dde6d8]">
@@ -770,7 +770,7 @@ export default function TerreniDashboard() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                <div className="terrain-hero-kpi p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
                     Province live
                   </div>
@@ -778,7 +778,7 @@ export default function TerreniDashboard() {
                     {selectedProvinceIds.length}
                   </div>
                 </div>
-                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                <div className="terrain-hero-kpi p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
                     Fonti monitorate
                   </div>
@@ -786,7 +786,7 @@ export default function TerreniDashboard() {
                     {selectedCategoryIds.length}
                   </div>
                 </div>
-                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                <div className="terrain-hero-kpi p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
                     Stato scan
                   </div>
@@ -800,7 +800,7 @@ export default function TerreniDashboard() {
                           : "Pronto al lancio"}
                   </div>
                 </div>
-                <div className="rounded-[24px] border border-white/10 bg-white/8 p-4 backdrop-blur">
+                <div className="terrain-hero-kpi p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
                     Ultimo log
                   </div>
@@ -819,7 +819,7 @@ export default function TerreniDashboard() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="terrain-keyline">Mission control</div>
-                  <h2 className="mt-3 text-[2rem] font-semibold tracking-[-0.045em] text-[var(--foreground)]">
+                  <h2 className="terrain-section-title mt-3 text-[2rem] text-[var(--foreground)]">
                     Radar territoriale
                   </h2>
                   <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)]">
@@ -827,7 +827,7 @@ export default function TerreniDashboard() {
                     tipologia emissiva e azioni di scansione o export.
                   </p>
                 </div>
-                <div className="rounded-[22px] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-4 py-3 text-right shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+                <div className="terrain-choice-card px-4 py-3 text-right">
                   <div className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--muted)]">
                     Buffer
                   </div>
@@ -842,7 +842,7 @@ export default function TerreniDashboard() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="terrain-keyline">Ambito geografico</div>
-                      <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                      <h3 className="terrain-panel-title mt-2 text-lg text-[var(--foreground)]">
                         Province toscane
                       </h3>
                     </div>
@@ -865,8 +865,8 @@ export default function TerreniDashboard() {
                           }
                           className={`rounded-[22px] border px-4 py-3 text-left transition ${
                             checked
-                              ? "border-[rgba(17,31,21,0.12)] bg-[linear-gradient(135deg,#1a2b1d,#304735)] text-white shadow-[0_18px_35px_rgba(18,27,19,0.2)]"
-                              : "border-[var(--line)] bg-[rgba(255,255,255,0.55)] text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] hover:border-[rgba(44,66,49,0.22)] hover:bg-[rgba(255,255,255,0.78)]"
+                              ? "terrain-choice-card-active text-white"
+                              : "terrain-choice-card text-[var(--foreground)]"
                           }`}
                         >
                           <div className="font-semibold">{province.name}</div>
@@ -887,7 +887,7 @@ export default function TerreniDashboard() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="terrain-keyline">Sorgenti</div>
-                      <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                      <h3 className="terrain-panel-title mt-2 text-lg text-[var(--foreground)]">
                         Fonti emissive
                       </h3>
                     </div>
@@ -911,8 +911,8 @@ export default function TerreniDashboard() {
                           }
                           className={`w-full rounded-[24px] border p-4 text-left transition ${
                             checked
-                              ? "border-[rgba(17,31,21,0.08)] bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(231,236,223,0.96))] shadow-[0_18px_35px_rgba(25,33,24,0.08)]"
-                              : "border-[var(--line)] bg-[rgba(255,255,255,0.5)] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] hover:bg-[rgba(255,255,255,0.74)]"
+                              ? "terrain-choice-card-active text-white"
+                              : "terrain-choice-card"
                           }`}
                         >
                           <div className="flex items-start gap-3">
@@ -921,10 +921,10 @@ export default function TerreniDashboard() {
                               style={{ backgroundColor: category.color }}
                             />
                             <div>
-                              <div className="font-semibold text-[var(--foreground)]">
+                              <div className={`font-semibold ${checked ? "text-white" : "text-[var(--foreground)]"}`}>
                                 {category.label}
                               </div>
-                              <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+                              <p className={`mt-1 text-xs leading-5 ${checked ? "text-[#d8e3d4]" : "text-[var(--muted)]"}`}>
                                 {category.description}
                               </p>
                             </div>
@@ -941,7 +941,7 @@ export default function TerreniDashboard() {
               <div className="terrain-keyline terrain-keyline-dark">
                 Scan engine
               </div>
-              <h2 className="mt-3 text-[1.85rem] font-semibold tracking-[-0.04em] text-white">
+              <h2 className="terrain-section-title mt-3 text-[1.85rem] text-white">
                 Lancia la ricognizione
               </h2>
               <p className="mt-3 text-sm leading-6 text-[#cfdbcb]">
@@ -1040,13 +1040,13 @@ export default function TerreniDashboard() {
 
             {scanJob ? (
               <section className="terrain-shell p-5 lg:p-6">
-                <div className="flex items-end justify-between gap-4">
-                  <div>
-                    <div className="terrain-keyline">Timeline</div>
-                    <h2 className="mt-3 text-[1.8rem] font-semibold tracking-[-0.04em] text-[var(--foreground)]">
-                      Log scansione
-                    </h2>
-                  </div>
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <div className="terrain-keyline">Timeline</div>
+                  <h2 className="terrain-section-title mt-3 text-[1.8rem] text-[var(--foreground)]">
+                    Log scansione
+                  </h2>
+                </div>
                   <span className="rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.65)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-strong)]">
                     {scanJob.status}
                   </span>
@@ -1072,7 +1072,7 @@ export default function TerreniDashboard() {
 
             <section className="terrain-shell p-5 lg:p-6">
               <div className="terrain-keyline">Compliance note</div>
-              <h2 className="mt-3 text-[1.6rem] font-semibold tracking-[-0.04em] text-[var(--foreground)]">
+              <h2 className="terrain-section-title mt-3 text-[1.6rem] text-[var(--foreground)]">
                 Stato del dataset
               </h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
@@ -1126,7 +1126,7 @@ export default function TerreniDashboard() {
             {scanData?.meta.warnings.map((warning) => (
               <div
                 key={warning}
-                className="terrain-shell border-[rgba(122,100,31,0.2)] bg-[linear-gradient(180deg,rgba(255,248,225,0.92),rgba(244,236,195,0.84))] px-5 py-4 text-sm leading-6 text-[#6b5920]"
+                className="terrain-shell terrain-warning-banner px-5 py-4 text-sm leading-6"
               >
                 {warning}
               </div>
@@ -1135,18 +1135,18 @@ export default function TerreniDashboard() {
             {(scanData?.meta.notes ?? []).map((note) => (
               <div
                 key={note}
-                className="terrain-shell border-[rgba(40,61,47,0.12)] bg-[linear-gradient(180deg,rgba(244,246,240,0.94),rgba(233,237,228,0.88))] px-5 py-4 text-sm leading-6 text-[var(--muted-strong)]"
+                className="terrain-shell terrain-note-banner px-5 py-4 text-sm leading-6"
               >
                 {note}
               </div>
             ))}
 
             <section ref={atlasRef} className="terrain-shell p-3 sm:p-4">
-              <div className="rounded-[28px] border border-[rgba(24,39,27,0.1)] bg-[rgba(255,255,255,0.44)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] sm:p-5">
+              <div className="terrain-choice-card p-4 sm:p-5">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                   <div className="max-w-2xl">
                     <div className="terrain-keyline">Atlante operativo</div>
-                    <h2 className="mt-3 text-[2.25rem] font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+                    <h2 className="terrain-section-title mt-3 text-[2.25rem] text-[var(--foreground)]">
                       Mappa, catasto e matching nello stesso stage
                     </h2>
                     <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
@@ -1279,7 +1279,7 @@ export default function TerreniDashboard() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <div className="terrain-keyline">Registro operativo</div>
-                <h2 className="mt-3 text-[2.1rem] font-semibold tracking-[-0.045em] text-[var(--foreground)]">
+                <h2 className="terrain-section-title mt-3 text-[2.1rem] text-[var(--foreground)]">
                   Ledger dei terreni
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
@@ -1297,7 +1297,7 @@ export default function TerreniDashboard() {
                     onChange={(event) =>
                       setTerrainSortMode(event.target.value as TerrainSortMode)
                     }
-                    className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.68)] px-4 py-3 text-sm font-medium text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.76)] outline-none transition focus:border-[rgba(44,66,49,0.28)]"
+                    className="terrain-select px-4 py-3 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[rgba(44,66,49,0.28)]"
                   >
                     <option value="distance-asc">Distanza crescente</option>
                     <option value="comune-asc">Comune A-Z</option>
@@ -1313,7 +1313,7 @@ export default function TerreniDashboard() {
             </div>
 
             <div className="mt-5 overflow-x-auto">
-              <table className="min-w-full border-separate border-spacing-y-2.5">
+              <table className="terrain-ledger-table min-w-full">
                 <thead>
                   <tr className="text-left text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
                     <th className="px-4 pb-1">Terreno</th>
@@ -1411,13 +1411,13 @@ export default function TerreniDashboard() {
             <div className="terrain-keyline terrain-keyline-dark">
               Asset dossier
             </div>
-            <h2 className="mt-3 text-[2rem] font-semibold tracking-[-0.045em] text-white">
+            <h2 className="terrain-section-title mt-3 text-[2rem] text-white">
               Scheda terreno
             </h2>
 
             {activeTerrain ? (
               <div className="mt-5 space-y-5 text-sm leading-6 text-[#e4ece0]">
-                <div className="rounded-[26px] border border-white/8 bg-white/6 p-5">
+                <div className="terrain-dossier-card p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Nome asset
                   </div>
@@ -1427,7 +1427,7 @@ export default function TerreniDashboard() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
                     <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Provincia
                     </div>
@@ -1435,7 +1435,7 @@ export default function TerreniDashboard() {
                       {PROVINCE_MAP[activeTerrain.provinceId].name}
                     </div>
                   </div>
-                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
                     <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Uso
                     </div>
@@ -1443,7 +1443,7 @@ export default function TerreniDashboard() {
                       {landuseLabel(activeTerrain.landuse)}
                     </div>
                   </div>
-                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
                     <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Distanza
                     </div>
@@ -1451,7 +1451,7 @@ export default function TerreniDashboard() {
                       {formatMeters(activeTerrain.distanceMeters)}
                     </div>
                   </div>
-                  <div className="rounded-[22px] border border-white/8 bg-white/6 p-4">
+                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
                     <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                       Superficie
                     </div>
@@ -1461,7 +1461,7 @@ export default function TerreniDashboard() {
                   </div>
                 </div>
 
-                <div className="rounded-[26px] border border-white/8 bg-white/6 p-5">
+                <div className="terrain-dossier-card p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Fonte più vicina
                   </div>
@@ -1476,7 +1476,7 @@ export default function TerreniDashboard() {
                   </div>
                 </div>
 
-                <div className="rounded-[26px] border border-white/8 bg-white/6 p-5">
+                <div className="terrain-dossier-card p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Coordinate centroide
                   </div>
@@ -1513,7 +1513,7 @@ export default function TerreniDashboard() {
                   </a>
                 </div>
 
-                <div className="rounded-[26px] border border-white/8 bg-[#111b14] p-5">
+                <div className="terrain-dossier-card bg-[#111b14] p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Step successivi
                   </div>
@@ -1535,13 +1535,13 @@ export default function TerreniDashboard() {
 
       {isTerrainPreviewOpen && activeTerrain ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,16,11,0.72)] px-4 py-6 backdrop-blur-sm">
-          <div className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px] border border-[rgba(255,255,255,0.12)] bg-[#132017] shadow-[0_36px_120px_rgba(10,17,12,0.45)]">
+          <div className="terrain-preview-shell relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px]">
             <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5 text-white">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.2em] text-[#9eb399]">
                   Anteprima poligono
                 </div>
-                <h3 className="mt-2 text-2xl font-semibold tracking-[-0.04em]">
+                <h3 className="terrain-panel-title mt-2 text-2xl">
                   {activeTerrain.name}
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-[#d4dfd1]">
@@ -1570,7 +1570,7 @@ export default function TerreniDashboard() {
               </div>
 
               <div className="space-y-4 text-sm leading-6 text-[#dce7d9]">
-                <div className="rounded-[24px] border border-white/10 bg-white/6 p-5">
+                <div className="terrain-dossier-card terrain-dossier-card-soft p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Sintesi rapida
                   </div>
@@ -1594,7 +1594,7 @@ export default function TerreniDashboard() {
                   </div>
                 </div>
 
-                <div className="rounded-[24px] border border-white/10 bg-white/6 p-5">
+                <div className="terrain-dossier-card terrain-dossier-card-soft p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Fonte associata
                   </div>
@@ -1612,7 +1612,7 @@ export default function TerreniDashboard() {
                   </p>
                 </div>
 
-                <div className="rounded-[24px] border border-white/10 bg-[#101a13] p-5">
+                <div className="terrain-dossier-card p-5">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
                     Azioni
                   </div>
