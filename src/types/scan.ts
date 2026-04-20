@@ -28,6 +28,8 @@ export type BoundingBox = {
   east: number;
 };
 
+export type SourceDataProviderId = "osm" | "mimit" | "ispra";
+
 export type SourceFeature = {
   id: string;
   osmId: number;
@@ -39,6 +41,9 @@ export type SourceFeature = {
   latitude: number;
   longitude: number;
   address: string | null;
+  dataProvider: SourceDataProviderId;
+  providerLabel: string;
+  referenceUrl: string | null;
   tags: Record<string, string>;
 };
 

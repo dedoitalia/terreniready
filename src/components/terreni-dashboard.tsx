@@ -520,7 +520,7 @@ export default function TerreniDashboard() {
                   </div>
                   <div className="mt-4 space-y-3 text-sm leading-6 text-[#e5eee0]">
                     <p>1. Selezione geografica delle province target.</p>
-                    <p>2. Interrogazione live delle fonti emissive pubbliche.</p>
+                    <p>2. Ingest di fonti da dataset ufficiali e provider geospaziali.</p>
                     <p>3. Matching spaziale dei terreni agricoli nel buffer.</p>
                     <p>4. Lettura in mappa, tabella ed export del dossier.</p>
                   </div>
@@ -528,7 +528,7 @@ export default function TerreniDashboard() {
               </div>
               <div className="flex flex-wrap gap-3">
                 <span className="terrain-chip terrain-chip-dark">
-                  OpenStreetMap live scan
+                  MIMIT + provider geospaziali
                 </span>
                 <span className="terrain-chip terrain-chip-dark">
                   Overlay catastale WMS ufficiale

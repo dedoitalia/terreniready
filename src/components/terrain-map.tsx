@@ -130,7 +130,18 @@ export default function TerrainMap({
                 <div className="space-y-2 text-sm">
                   <p className="font-semibold">{source.name}</p>
                   <p>{category.label}</p>
+                  <p className="text-[var(--muted)]">{source.providerLabel}</p>
                   {source.address ? <p>{source.address}</p> : null}
+                  {source.referenceUrl ? (
+                    <a
+                      href={source.referenceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex text-xs font-medium text-[#244c74] underline underline-offset-2"
+                    >
+                      Apri sorgente dati
+                    </a>
+                  ) : null}
                 </div>
               </Popup>
             </Circle>
@@ -213,7 +224,8 @@ export default function TerrainMap({
 
       <div className="pointer-events-none absolute bottom-4 left-4 max-w-xs rounded-[22px] border border-white/10 bg-[rgba(17,27,19,0.82)] px-4 py-3 text-xs leading-5 text-[#edf3e8] shadow-lg backdrop-blur">
         Dati mappa: immagini satellitari Esri, particelle catastali WMS Agenzia
-        delle Entrate, fonti e aree agricole da OpenStreetMap.
+        delle Entrate, fonti da MIMIT e OpenStreetMap, aree agricole da
+        OpenStreetMap.
       </div>
     </div>
   );

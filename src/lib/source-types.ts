@@ -17,7 +17,7 @@ export const SOURCE_CATEGORIES: SourceCategoryDefinition[] = [
   {
     id: "fuel",
     label: "Distributori",
-    description: "Stazioni di servizio e carburanti da OpenStreetMap.",
+    description: "Stazioni di servizio dal dataset ufficiale MIMIT Osservaprezzi.",
     color: "#d14d41",
     selectors: [{ key: "amenity", value: "fuel" }],
   },

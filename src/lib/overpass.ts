@@ -11,6 +11,7 @@ import {
 } from "@turf/turf";
 
 import { PROVINCE_MAP } from "@/lib/province-data";
+import { fetchFuelSourcesFromMimit } from "@/lib/mimit-fuel";
 import {
   AGRICULTURAL_SELECTORS,
   SOURCE_CATEGORIES,
@@ -47,7 +48,7 @@ const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
 const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
 const TERRAIN_OBSTACLE_MARGIN_METERS = 25;
 const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
-const TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
+const BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
 
 const EXCLUDED_URBAN_LANDUSES = new Set(["residential", "industrial", "commercial"]);
 const ROAD_SELECTORS = [
@@ -557,7 +558,43 @@ async function fetchSourcesForProvince(
   provinceId: ProvinceId,
   categoryIds: SourceCategoryId[],
   reporter?: ProgressReporter,
-) {
+): Promise<SourceFeature[]> {
+  const province = PROVINCE_MAP[provinceId];
+  const sources: SourceFeature[] = [];
+
+  if (categoryIds.includes("fuel")) {
+    sources.push(
+      ...(await fetchFuelSourcesFromMimit(provinceId, (message) => {
+        reportProgress(reporter, message);
+      })),
+    );
+  }
+
+  const overpassCategoryIds = categoryIds.filter((categoryId) => categoryId !== "fuel");
+
+  if (overpassCategoryIds.length > 0) {
+    sources.push(
+      ...(await fetchOverpassSourcesForProvince(
+        provinceId,
+        overpassCategoryIds,
+        reporter,
+      )),
+    );
+  }
+
+  reportProgress(
+    reporter,
+    `${province.name}: totale fonti raccolte ${sources.length}.`,
+  );
+
+  return sources;
+}
+
+async function fetchOverpassSourcesForProvince(
+  provinceId: ProvinceId,
+  categoryIds: SourceCategoryId[],
+  reporter?: ProgressReporter,
+): Promise<SourceFeature[]> {
   const province = PROVINCE_MAP[provinceId];
   const selectors = categoryIds.flatMap(
     (categoryId) => SOURCE_CATEGORY_MAP[categoryId].selectors,
@@ -605,10 +642,13 @@ out center;
         latitude: coordinates.lat,
         longitude: coordinates.lng,
         address: formatAddress(tags),
+        dataProvider: "osm",
+        providerLabel: "OpenStreetMap",
+        referenceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
         tags,
       } satisfies SourceFeature;
     })
-    .filter((source): source is SourceFeature => source !== null);
+    .filter((source) => source !== null) as SourceFeature[];
 
   reportProgress(
     reporter,
@@ -616,6 +656,30 @@ out center;
   );
 
   return sources;
+}
+
+function terrainClusterRadiusForSourceCount(sourceCount: number) {
+  if (sourceCount >= 220) {
+    return 460;
+  }
+
+  if (sourceCount >= 120) {
+    return 340;
+  }
+
+  return BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS;
+}
+
+function agriAnchorChunkSize(sourceCount: number) {
+  if (sourceCount >= 220) {
+    return 40;
+  }
+
+  if (sourceCount >= 120) {
+    return 32;
+  }
+
+  return ANCHORS_PER_AGRI_CHUNK;
 }
 
 function chunkArray<T>(items: T[], size: number) {
@@ -646,12 +710,14 @@ function buildAroundStatements(
 }
 
 function buildTerrainSearchAnchors(sources: SourceFeature[]) {
+  const clusterRadiusMeters = terrainClusterRadiusForSourceCount(sources.length);
   const anchors: Array<{
     lat: number;
     lng: number;
     sourceIds: string[];
     maxDistanceMeters: number;
   }> = [];
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
 
   for (const source of sources) {
     const sourcePoint = point([source.longitude, source.latitude]);
@@ -672,7 +738,7 @@ function buildTerrainSearchAnchors(sources: SourceFeature[]) {
       });
 
       if (
-        anchorDistance <= TERRAIN_SOURCE_CLUSTER_RADIUS_METERS &&
+        anchorDistance <= clusterRadiusMeters &&
         anchorDistance < matchedDistance
       ) {
         matchedAnchor = anchor;
@@ -702,7 +768,7 @@ function buildTerrainSearchAnchors(sources: SourceFeature[]) {
     const nextAnchorPoint = point([matchedAnchor.lng, matchedAnchor.lat]);
 
     for (const sourceId of matchedAnchor.sourceIds) {
-      const member = sources.find((candidate) => candidate.id === sourceId);
+      const member = sourceById.get(sourceId);
 
       if (!member) {
         continue;
@@ -1036,7 +1102,10 @@ async function fetchAgriculturalWaysNearSources(
   }
 
   const terrainAnchors = buildTerrainSearchAnchors(provinceSources);
-  const anchorChunks = chunkArray(terrainAnchors, ANCHORS_PER_AGRI_CHUNK);
+  const anchorChunks = chunkArray(
+    terrainAnchors,
+    agriAnchorChunkSize(provinceSources.length),
+  );
   const allElements: OverpassElement[] = [];
   const province = PROVINCE_MAP[provinceId];
   let warning: string | null = null;
@@ -1370,7 +1439,7 @@ export async function runScan(
 
       if (sources.length === 0) {
         warnings.push(
-          `Nessuna fonte OSM trovata nelle province selezionate. Prova con ${provinceName("FI")}, ${provinceName("PI")} o ${provinceName("PT")}.`,
+          `Nessuna fonte trovata nei provider attivi. Prova con ${provinceName("FI")}, ${provinceName("PI")} o ${provinceName("PT")}.`,
         );
       }
 

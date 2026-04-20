@@ -8,7 +8,7 @@ export function formatScanErrorMessage(error: unknown) {
     rawMessage.includes("responded with 429") ||
     rawMessage.toLowerCase().includes("rate limit")
   ) {
-    return "Le sorgenti OpenStreetMap sono temporaneamente sature. Riprova tra 1-2 minuti.";
+    return "Le sorgenti geospaziali pubbliche sono temporaneamente sature. Riprova tra 1-2 minuti.";
   }
 
   return rawMessage;
