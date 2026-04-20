@@ -119,6 +119,19 @@ function terrainMapUrl(terrain: TerrainFeature) {
   );
 }
 
+function escapeXml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function safeCdata(value: string) {
+  return value.replaceAll("]]>", "]]]]><![CDATA[>");
+}
+
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
@@ -210,13 +223,17 @@ function loadingContextCopy(
 
 function terrainPlacemark(terrain: TerrainFeature) {
   const coordinates = terrain.coordinates
-    .map(([lng, lat]) => `${lng},${lat},0`)
-    .join(" ");
+    .filter(
+      (coordinate): coordinate is [number, number] =>
+        Number.isFinite(coordinate[0]) && Number.isFinite(coordinate[1]),
+    )
+    .map(([lng, lat]) => `${lng},${lat},0`);
 
-  return `
-    <Placemark>
-      <name>${terrain.name}</name>
-      <description><![CDATA[
+  if (coordinates.length < 4) {
+    return null;
+  }
+
+  const description = safeCdata(`
         Provincia: ${PROVINCE_MAP[terrain.provinceId].name}<br/>
         Classe: ${landuseLabel(terrain.landuse)}<br/>
         Distanza: ${Math.round(terrain.distanceMeters)} m<br/>
@@ -225,7 +242,12 @@ function terrainPlacemark(terrain: TerrainFeature) {
         } m²<br/>
         Fonte: ${terrain.closestSourceName}<br/>
         Provider: ${terrain.providerLabel}
-      ]]></description>
+      `.trim());
+
+  return `
+    <Placemark>
+      <name>${escapeXml(terrain.name)}</name>
+      <description><![CDATA[${description}]]></description>
       <Style>
         <LineStyle><color>ff2f5d22</color><width>2</width></LineStyle>
         <PolyStyle><color>6670c16d</color></PolyStyle>
@@ -233,7 +255,7 @@ function terrainPlacemark(terrain: TerrainFeature) {
       <Polygon>
         <outerBoundaryIs>
           <LinearRing>
-            <coordinates>${coordinates}</coordinates>
+            <coordinates>${coordinates.join(" ")}</coordinates>
           </LinearRing>
         </outerBoundaryIs>
       </Polygon>
@@ -241,11 +263,19 @@ function terrainPlacemark(terrain: TerrainFeature) {
 }
 
 async function downloadKmz(data: ScanResponse) {
+  const placemarks = data.terrains
+    .map(terrainPlacemark)
+    .filter((placemark): placemark is string => placemark !== null);
+
+  if (placemarks.length === 0) {
+    throw new Error("Nessuna geometria valida da esportare in KMZ.");
+  }
+
   const kml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>TerreniReady Export</name>
-    ${data.terrains.map(terrainPlacemark).join("\n")}
+    <name>${escapeXml("TerreniReady Export")}</name>
+    ${placemarks.join("\n")}
   </Document>
 </kml>`;
 
@@ -846,7 +876,13 @@ export default function TerreniDashboard() {
                       return;
                     }
 
-                    void downloadKmz(scanData);
+                    void downloadKmz(scanData).catch((downloadError) => {
+                      setError(
+                        downloadError instanceof Error
+                          ? downloadError.message
+                          : "Export KMZ non riuscito. Riprova tra pochi secondi.",
+                      );
+                    });
                   }}
                   disabled={!scanData || scanData.terrains.length === 0}
                   className="terrain-button-secondary terrain-button-secondary-dark sm:col-span-2 xl:col-span-1"
