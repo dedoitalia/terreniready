@@ -160,15 +160,43 @@ function latestRunHeadline(data: ScanResponse | null, latestLog?: ScanJobLogEntr
 
   if (data.terrains.length === 0) {
     return hasPartialCoverage
-      ? `Scansione parziale: ${data.sources.length} fonti, copertura terreni incompleta.`
+      ? `Scansione parziale: ${data.sources.length} fonti caricate, copertura terreni incompleta.`
       : `Scansione completata: ${data.sources.length} fonti, nessun terreno trovato.`;
   }
 
   if (hasPartialCoverage) {
-    return `Scansione completata con copertura parziale: ${data.sources.length} fonti e ${data.terrains.length} terreni.`;
+    return `Scansione parziale: ${data.sources.length} fonti e ${data.terrains.length} terreni, copertura terreni incompleta.`;
   }
 
   return `Scansione completata: ${data.sources.length} fonti e ${data.terrains.length} terreni restituiti.`;
+}
+
+function loadingContextCopy(
+  selectedProvinceCount: number,
+  categoryIds: SourceCategoryId[],
+  isLongRunningScan: boolean,
+) {
+  if (isLongRunningScan) {
+    if (categoryIds.length === 1 && categoryIds[0] === "fuel") {
+      return "I distributori sono gia acquisiti dal dataset ufficiale MIMIT; il motore sta ancora completando terreni agricoli e filtri urbani sui provider geospaziali pubblici.";
+    }
+
+    return "Il job è ancora vivo sul server. Continuo a leggere i log e a completare i passaggi residui su fonti e terreni, senza interrompere la scansione.";
+  }
+
+  if (categoryIds.length === 1 && categoryIds[0] === "fuel") {
+    return "I distributori arrivano dal dataset ufficiale MIMIT; in questa fase sto verificando terreni agricoli e filtri urbani nel buffer selezionato.";
+  }
+
+  if (categoryIds.includes("fuel")) {
+    return "Le fonti carburante arrivano da MIMIT, mentre le altre categorie e i terreni passano ancora dai provider geospaziali pubblici.";
+  }
+
+  if (selectedProvinceCount > 1 || categoryIds.length > 1) {
+    return "Con più province o categorie la pipeline può richiedere più tempo.";
+  }
+
+  return "Sto cercando fonti e terreni agricoli nel buffer selezionato.";
 }
 
 function terrainPlacemark(terrain: TerrainFeature) {
@@ -840,11 +868,11 @@ export default function TerreniDashboard() {
                     />
                   </div>
                   <p className="mt-3 text-xs leading-5 text-[#c1d0be]">
-                    {isLongRunningScan
-                      ? "Il job è ancora vivo sul server. Continuo a leggere i log e ad attendere il risultato, senza interrompere la scansione."
-                      : selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
-                        ? "Con più province o categorie la pipeline può richiedere più tempo."
-                        : "Sto cercando fonti e terreni agricoli nel buffer selezionato."}
+                    {loadingContextCopy(
+                      selectedProvinceIds.length,
+                      selectedCategoryIds,
+                      isLongRunningScan,
+                    )}
                   </p>
                   {latestLog ? (
                     <p className="mt-2 rounded-2xl bg-black/12 px-3 py-2 text-xs leading-5 text-[#e5ede1]">
@@ -1065,7 +1093,7 @@ export default function TerreniDashboard() {
                   {scanData?.meta.warnings.some((warning) =>
                     warning.toLowerCase().includes("parzial"),
                   )
-                    ? "Il run si e chiuso, ma con copertura parziale: i dettagli restano nella timeline e nei warning operativi."
+                    ? "Le fonti utili sono state caricate, ma una parte della copertura terreni o dei filtri urbani resta incompleta: i dettagli sono nella timeline e nei warning operativi."
                     : "Ogni step del job e leggibile anche dalla timeline nella colonna di comando."}
                 </p>
               </div>
