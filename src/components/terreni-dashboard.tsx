@@ -142,6 +142,28 @@ function buildCsv(data: ScanResponse) {
     .join("\n");
 }
 
+function latestRunHeadline(data: ScanResponse | null, latestLog?: ScanJobLogEntry) {
+  if (!data) {
+    return latestLog?.message ?? "Nessun evento registrato";
+  }
+
+  const hasPartialCoverage = data.meta.warnings.some((warning) =>
+    warning.toLowerCase().includes("parzial"),
+  );
+
+  if (data.terrains.length === 0) {
+    return hasPartialCoverage
+      ? `Scansione parziale: ${data.sources.length} fonti, copertura terreni incompleta.`
+      : `Scansione completata: ${data.sources.length} fonti, nessun terreno trovato.`;
+  }
+
+  if (hasPartialCoverage) {
+    return `Scansione completata con copertura parziale: ${data.sources.length} fonti e ${data.terrains.length} terreni.`;
+  }
+
+  return `Scansione completata: ${data.sources.length} fonti e ${data.terrains.length} terreni restituiti.`;
+}
+
 function terrainPlacemark(terrain: TerrainFeature) {
   const coordinates = terrain.coordinates
     .map(([lng, lat]) => `${lng},${lat},0`)
@@ -225,6 +247,7 @@ export default function TerreniDashboard() {
       : "Nessuna categoria selezionata";
 
   const latestLog = scanJob?.logs.at(-1);
+  const latestHeadline = latestRunHeadline(scanData, latestLog);
   const warningCount = scanData?.meta.warnings.length ?? 0;
   const isLongRunningScan = loading && loadingSeconds >= LONG_SCAN_THRESHOLD_SECONDS;
 
@@ -909,11 +932,14 @@ export default function TerreniDashboard() {
               <div className="terrain-mini-card p-5">
                 <div className="terrain-keyline">Ultimo evento</div>
                 <div className="mt-3 text-lg font-semibold text-[var(--foreground)]">
-                  {latestLog?.message ?? "Nessun evento registrato"}
+                  {latestHeadline}
                 </div>
                 <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                  Ogni step del job è leggibile anche dalla timeline nella colonna
-                  di comando.
+                  {scanData?.meta.warnings.some((warning) =>
+                    warning.toLowerCase().includes("parzial"),
+                  )
+                    ? "Il run si e chiuso, ma con copertura parziale: i dettagli restano nella timeline e nei warning operativi."
+                    : "Ogni step del job e leggibile anche dalla timeline nella colonna di comando."}
                 </p>
               </div>
               <div className="terrain-mini-card p-5">

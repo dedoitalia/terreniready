@@ -39,7 +39,7 @@ const MAX_TERRAINS = 250;
 const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
-const SOURCES_PER_AGRI_CHUNK = 40;
+const ANCHORS_PER_AGRI_CHUNK = 24;
 const TERRAINS_PER_OBSTACLE_CHUNK = 20;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
 const OVERPASS_MAX_CYCLES = 2;
@@ -47,6 +47,7 @@ const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
 const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
 const TERRAIN_OBSTACLE_MARGIN_METERS = 25;
 const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
+const TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
 
 const EXCLUDED_URBAN_LANDUSES = new Set(["residential", "industrial", "commercial"]);
 const ROAD_SELECTORS = [
@@ -140,6 +141,14 @@ type TerrainFilterStats = {
   rejectedByBuildings: number;
   rejectedByUrbanAreas: number;
   rejectedByRoads: number;
+};
+
+type TerrainSearchAnchor = {
+  id: string;
+  lat: number;
+  lng: number;
+  probeRadiusMeters: number;
+  sourceIds: string[];
 };
 
 class OverpassRateLimitError extends Error {
@@ -259,21 +268,19 @@ function bboxString(bbox: BoundingBox) {
   return `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
 }
 
-function buildSelectorStatements(
+function buildAreaSelectorStatements(
   selectors: Array<{ key: string; value?: string }>,
-  bbox: BoundingBox,
+  areaReference: string,
   elementTypes: Array<"node" | "way">,
 ) {
-  const area = bboxString(bbox);
-
   return selectors
     .flatMap((selector) =>
       elementTypes.map((elementType) => {
         if (selector.value) {
-          return `${elementType}["${selector.key}"="${selector.value}"](${area});`;
+          return `${elementType}["${selector.key}"="${selector.value}"](${areaReference});`;
         }
 
-        return `${elementType}["${selector.key}"](${area});`;
+        return `${elementType}["${selector.key}"](${areaReference});`;
       }),
     )
     .join("\n");
@@ -557,8 +564,10 @@ async function fetchSourcesForProvince(
   );
   const query = `
 [out:json][timeout:40];
+rel["boundary"="administrative"]["admin_level"="6"]["name"="${province.name}"](${bboxString(province.bbox)});
+map_to_area -> .provinceArea;
 (
-${buildSelectorStatements(selectors, province.bbox, ["node", "way"])}
+${buildAreaSelectorStatements(selectors, "area.provinceArea", ["node", "way"])}
 );
 out center;
 `;
@@ -617,19 +626,104 @@ function chunkArray<T>(items: T[], size: number) {
 
 function buildAroundStatements(
   selectors: Array<{ key: string; value?: string }>,
-  sources: SourceFeature[],
+  anchors: TerrainSearchAnchor[],
 ) {
-  return sources
-    .flatMap((source) =>
+  return anchors
+    .flatMap((anchor) =>
       selectors.map((selector) => {
         const filter = selector.value
           ? `["${selector.key}"="${selector.value}"]`
           : `["${selector.key}"]`;
 
-        return `way${filter}(around:${SEARCH_RADIUS_METERS},${source.latitude},${source.longitude});`;
+        return `way${filter}(around:${anchor.probeRadiusMeters},${anchor.lat},${anchor.lng});`;
       }),
     )
     .join("\n");
+}
+
+function buildTerrainSearchAnchors(sources: SourceFeature[]) {
+  const anchors: Array<{
+    lat: number;
+    lng: number;
+    sourceIds: string[];
+    maxDistanceMeters: number;
+  }> = [];
+
+  for (const source of sources) {
+    const sourcePoint = point([source.longitude, source.latitude]);
+    let matchedAnchor:
+      | {
+          lat: number;
+          lng: number;
+          sourceIds: string[];
+          maxDistanceMeters: number;
+        }
+      | undefined;
+    let matchedDistance = Number.POSITIVE_INFINITY;
+
+    for (const anchor of anchors) {
+      const anchorPoint = point([anchor.lng, anchor.lat]);
+      const anchorDistance = distance(sourcePoint, anchorPoint, {
+        units: "meters",
+      });
+
+      if (
+        anchorDistance <= TERRAIN_SOURCE_CLUSTER_RADIUS_METERS &&
+        anchorDistance < matchedDistance
+      ) {
+        matchedAnchor = anchor;
+        matchedDistance = anchorDistance;
+      }
+    }
+
+    if (!matchedAnchor) {
+      anchors.push({
+        lat: source.latitude,
+        lng: source.longitude,
+        sourceIds: [source.id],
+        maxDistanceMeters: 0,
+      });
+      continue;
+    }
+
+    matchedAnchor.sourceIds.push(source.id);
+    matchedAnchor.lat =
+      (matchedAnchor.lat * (matchedAnchor.sourceIds.length - 1) + source.latitude) /
+      matchedAnchor.sourceIds.length;
+    matchedAnchor.lng =
+      (matchedAnchor.lng * (matchedAnchor.sourceIds.length - 1) + source.longitude) /
+      matchedAnchor.sourceIds.length;
+
+    let nextMaxDistance = 0;
+    const nextAnchorPoint = point([matchedAnchor.lng, matchedAnchor.lat]);
+
+    for (const sourceId of matchedAnchor.sourceIds) {
+      const member = sources.find((candidate) => candidate.id === sourceId);
+
+      if (!member) {
+        continue;
+      }
+
+      const memberPoint = point([member.longitude, member.latitude]);
+      nextMaxDistance = Math.max(
+        nextMaxDistance,
+        distance(memberPoint, nextAnchorPoint, { units: "meters" }),
+      );
+    }
+
+    matchedAnchor.maxDistanceMeters = nextMaxDistance;
+  }
+
+  return anchors.map((anchor, index) => ({
+    id: `anchor-${index + 1}`,
+    lat: anchor.lat,
+    lng: anchor.lng,
+    probeRadiusMeters: Math.min(
+      SEARCH_RADIUS_METERS * 2,
+      Math.ceil(SEARCH_RADIUS_METERS + anchor.maxDistanceMeters),
+    ),
+    sourceIds: anchor.sourceIds,
+  })) satisfies TerrainSearchAnchor[];
 }
 
 function buildAroundStatementsForTerrains(
@@ -937,25 +1031,35 @@ async function fetchAgriculturalWaysNearSources(
     };
   }
 
-  const sourceChunks = chunkArray(provinceSources, SOURCES_PER_AGRI_CHUNK);
+  const terrainAnchors = buildTerrainSearchAnchors(provinceSources);
+  const anchorChunks = chunkArray(terrainAnchors, ANCHORS_PER_AGRI_CHUNK);
   const allElements: OverpassElement[] = [];
   const province = PROVINCE_MAP[provinceId];
   let warning: string | null = null;
 
   reportProgress(
     reporter,
-    `${province.name}: avvio ricerca poligoni agricoli vicini alle fonti in ${sourceChunks.length} blocchi.`,
+    `${province.name}: fonti aggregate in ${terrainAnchors.length} ancore di ricerca.`,
   );
 
-  for (const [index, sourceChunk] of sourceChunks.entries()) {
+  reportProgress(
+    reporter,
+    `${province.name}: avvio ricerca poligoni agricoli vicini alle fonti in ${anchorChunks.length} blocchi.`,
+  );
+
+  for (const [index, anchorChunk] of anchorChunks.entries()) {
+    const chunkSourceCount = anchorChunk.reduce(
+      (sum, anchor) => sum + anchor.sourceIds.length,
+      0,
+    );
     reportProgress(
       reporter,
-      `${province.name}: blocco terreni ${index + 1}/${sourceChunks.length} su ${sourceChunk.length} fonti.`,
+      `${province.name}: blocco terreni ${index + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkSourceCount} fonti.`,
     );
     const query = `
 [out:json][timeout:45];
 (
-${buildAroundStatements(AGRICULTURAL_SELECTORS, sourceChunk)}
+${buildAroundStatements(AGRICULTURAL_SELECTORS, anchorChunk)}
 );
 out geom;
 `;
@@ -964,12 +1068,12 @@ out geom;
       const data = await fetchOverpass(
         query,
         reporter,
-        `${province.name} terreni blocco ${index + 1}/${sourceChunks.length}`,
+        `${province.name} terreni blocco ${index + 1}/${anchorChunks.length}`,
       );
       allElements.push(...data.elements);
     } catch (error) {
       if (error instanceof OverpassRateLimitError) {
-        warning = `${province.name}: scansione terreni completata parzialmente per rate limit Overpass al blocco ${index + 1}/${sourceChunks.length}.`;
+        warning = `${province.name}: scansione terreni completata parzialmente per rate limit Overpass al blocco ${index + 1}/${anchorChunks.length}.`;
         reportProgress(reporter, warning);
         break;
       }
