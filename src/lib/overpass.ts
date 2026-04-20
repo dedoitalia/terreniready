@@ -17,6 +17,7 @@ import type {
 } from "@/types/scan";
 
 const OVERPASS_ENDPOINTS = [
+  "https://overpass.private.coffee/api/interpreter",
   "https://overpass-api.de/api/interpreter",
   "https://lz4.overpass-api.de/api/interpreter",
   "https://z.overpass-api.de/api/interpreter",
@@ -187,7 +188,8 @@ async function fetchOverpass(query: string): Promise<OverpassResponse> {
           headers: {
             Accept: "application/json",
             "Content-Type": "text/plain;charset=UTF-8",
-            "User-Agent": "TerreniReady/0.1 (+https://terreniready.onrender.com)",
+            "User-Agent":
+              "TerreniReady/0.1 (+https://terreniready.onrender.com; repo:https://github.com/dedoitalia/terreniready)",
           },
           body: query,
         });
@@ -225,6 +227,10 @@ async function fetchOverpass(query: string): Promise<OverpassResponse> {
         lastError =
           error instanceof Error ? error : new Error("Unknown Overpass error");
       }
+    }
+
+    if (cached?.value) {
+      return cached.value;
     }
 
     if (sawRateLimit) {

@@ -14,10 +14,15 @@ export async function POST(request: NextRequest) {
 
     return Response.json(response);
   } catch (error) {
-    const message =
+    const rawMessage =
       error instanceof Error
         ? error.message
         : "Impossibile completare la scansione.";
+    const message =
+      rawMessage.includes("responded with 429") ||
+      rawMessage.toLowerCase().includes("rate limit")
+        ? "Le sorgenti OpenStreetMap sono temporaneamente sature. Riprova tra 1-2 minuti."
+        : rawMessage;
 
     return Response.json({ error: message }, { status: 400 });
   }
