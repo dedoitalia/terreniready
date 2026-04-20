@@ -21,7 +21,7 @@ const CADASTRAL_WFS_BASE_URL =
 const SEARCH_RADIUS_METERS = 350;
 const BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
 const CADASTRAL_ANCHORS_PER_CHUNK = 10;
-const CADASTRAL_EMPTY_BBOX_SPLIT_DEPTH = 2;
+const CADASTRAL_BBOX_SPLIT_DEPTH = 3;
 const CADASTRAL_WFS_PAGE_SIZE = 200;
 const CADASTRAL_WFS_MAX_PAGES = 6;
 const CADASTRAL_WFS_CACHE_TTL_MS = 45 * 60 * 1000;
@@ -34,6 +34,13 @@ type TerrainSearchAnchor = {
   lng: number;
   probeRadiusMeters: number;
   sourceIds: string[];
+};
+
+type CadastralBoundingBox = {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
 };
 
 type CadastralParcelFeature = {
@@ -222,7 +229,48 @@ function bboxForAnchorChunk(anchors: TerrainSearchAnchor[]) {
     east = Math.max(east, anchor.lng + lngDelta);
   }
 
-  return { south, west, north, east };
+  return { south, west, north, east } satisfies CadastralBoundingBox;
+}
+
+function splitBoundingBox(bbox: CadastralBoundingBox) {
+  const latSpan = bbox.north - bbox.south;
+  const lngSpan = bbox.east - bbox.west;
+
+  if (latSpan >= lngSpan) {
+    const midLat = bbox.south + latSpan / 2;
+
+    return [
+      {
+        south: bbox.south,
+        west: bbox.west,
+        north: midLat,
+        east: bbox.east,
+      },
+      {
+        south: midLat,
+        west: bbox.west,
+        north: bbox.north,
+        east: bbox.east,
+      },
+    ] satisfies CadastralBoundingBox[];
+  }
+
+  const midLng = bbox.west + lngSpan / 2;
+
+  return [
+    {
+      south: bbox.south,
+      west: bbox.west,
+      north: bbox.north,
+      east: midLng,
+    },
+    {
+      south: bbox.south,
+      west: midLng,
+      north: bbox.north,
+      east: bbox.east,
+    },
+  ] satisfies CadastralBoundingBox[];
 }
 
 function parsePosList(raw: unknown) {
@@ -423,7 +471,22 @@ async function fetchParcelsForAnchorChunk(
   remainingSplits: number,
   reporter?: ProgressReporter,
 ): Promise<AnchorChunkFetchResult> {
-  const bbox = bboxForAnchorChunk(anchors);
+  return fetchParcelsForBoundingBox(
+    provinceName,
+    blockLabel,
+    bboxForAnchorChunk(anchors),
+    remainingSplits,
+    reporter,
+  );
+}
+
+async function fetchParcelsForBoundingBox(
+  provinceName: string,
+  blockLabel: string,
+  bbox: CadastralBoundingBox,
+  remainingSplits: number,
+  reporter?: ProgressReporter,
+): Promise<AnchorChunkFetchResult> {
   const parcelMap = new Map<string, CadastralParcelFeature>();
   let nextUrl: string | null = buildWfsUrl(
     bbox.south,
@@ -453,28 +516,31 @@ async function fetchParcelsForAnchorChunk(
     hitPageCap = true;
   }
 
-  if (parcelMap.size === 0 && anchors.length > 1 && remainingSplits > 0) {
-    const midpoint = Math.ceil(anchors.length / 2);
-    const leftAnchors = anchors.slice(0, midpoint);
-    const rightAnchors = anchors.slice(midpoint);
+  if ((parcelMap.size === 0 || hitPageCap) && remainingSplits > 0) {
+    const splitReason =
+      parcelMap.size === 0
+        ? "vuoto su bbox aggregato"
+        : `tronco oltre ${CADASTRAL_WFS_MAX_PAGES} pagine`;
 
     reportProgress(
       reporter,
-      `${provinceName}: blocco particelle ${blockLabel} vuoto su bbox aggregato, lo suddivido.`,
+      `${provinceName}: blocco particelle ${blockLabel} ${splitReason}, lo suddivido.`,
     );
 
+    const [leftBox, rightBox] = splitBoundingBox(bbox);
+
     const [leftResult, rightResult] = await Promise.all([
-      fetchParcelsForAnchorChunk(
+      fetchParcelsForBoundingBox(
         provinceName,
         `${blockLabel}.a`,
-        leftAnchors,
+        leftBox,
         remainingSplits - 1,
         reporter,
       ),
-      fetchParcelsForAnchorChunk(
+      fetchParcelsForBoundingBox(
         provinceName,
         `${blockLabel}.b`,
-        rightAnchors,
+        rightBox,
         remainingSplits - 1,
         reporter,
       ),
@@ -638,7 +704,7 @@ export async function fetchCadastralTerrainsNearSources(
       province.name,
       `${chunkIndex + 1}/${anchorChunks.length}`,
       anchorChunk,
-      CADASTRAL_EMPTY_BBOX_SPLIT_DEPTH,
+      CADASTRAL_BBOX_SPLIT_DEPTH,
       reporter,
     );
 

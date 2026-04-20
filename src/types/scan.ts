@@ -89,6 +89,7 @@ export type ScanResponse = {
     totalSources: number;
     totalTerrains: number;
     warnings: string[];
+    notes: string[];
   };
 };
 

@@ -327,6 +327,7 @@ export default function TerreniDashboard() {
   const latestLog = scanJob?.logs.at(-1);
   const latestHeadline = latestRunHeadline(scanData, latestLog);
   const warningCount = scanData?.meta.warnings.length ?? 0;
+  const noteCount = scanData?.meta.notes?.length ?? 0;
   const isLongRunningScan = loading && loadingSeconds >= LONG_SCAN_THRESHOLD_SECONDS;
 
   useEffect(() => {
@@ -1006,7 +1007,7 @@ export default function TerreniDashboard() {
                 </p>
               </div>
               <div className="terrain-stat-card">
-                <div className="terrain-keyline">Warning pipeline</div>
+                <div className="terrain-keyline">Avvisi tecnici</div>
                 <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
                   {warningCount}
                 </div>
@@ -1022,6 +1023,15 @@ export default function TerreniDashboard() {
                 className="terrain-shell border-[rgba(122,100,31,0.2)] bg-[linear-gradient(180deg,rgba(255,248,225,0.92),rgba(244,236,195,0.84))] px-5 py-4 text-sm leading-6 text-[#6b5920]"
               >
                 {warning}
+              </div>
+            ))}
+
+            {(scanData?.meta.notes ?? []).map((note) => (
+              <div
+                key={note}
+                className="terrain-shell border-[rgba(40,61,47,0.12)] bg-[linear-gradient(180deg,rgba(244,246,240,0.94),rgba(233,237,228,0.88))] px-5 py-4 text-sm leading-6 text-[var(--muted-strong)]"
+              >
+                {note}
               </div>
             ))}
 
@@ -1125,6 +1135,11 @@ export default function TerreniDashboard() {
                   La lista a destra si sincronizza con la mappa e con la scheda del
                   terreno attivo.
                 </p>
+                {noteCount > 0 ? (
+                  <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
+                    {noteCount} note operative disponibili per cache o provider.
+                  </p>
+                ) : null}
               </div>
               <div className="terrain-mini-card p-5">
                 <div className="terrain-keyline">Ultimo evento</div>

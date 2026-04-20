@@ -1143,6 +1143,7 @@ export async function runScan(
   options?: RunScanOptions,
 ): Promise<ScanResponse> {
   const warnings: string[] = [];
+  const notes: string[] = [];
   const reporter = options?.reportProgress;
   const provinces = provinceIds.filter((provinceId) => provinceId in PROVINCE_MAP);
   const categories = categoryIds.filter((categoryId) =>
@@ -1218,8 +1219,11 @@ export async function runScan(
         );
       }
 
-      if (overpassCache.size > 0 && (categories.some((category) => category !== "fuel") || terrains.length > 0)) {
-        warnings.push(
+      if (
+        overpassCache.size > 0 &&
+        (categories.some((category) => category !== "fuel") || terrains.length > 0)
+      ) {
+        notes.push(
           "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre la pressione sui provider geospaziali live.",
         );
       }
@@ -1240,6 +1244,7 @@ export async function runScan(
           totalSources: sources.length,
           totalTerrains: terrains.length,
           warnings,
+          notes,
         },
       } satisfies ScanResponse;
 
@@ -1265,6 +1270,7 @@ export async function runScan(
           "Risultato restituito da cache precedente perché Overpass è temporaneamente saturo.",
           ...cachedResult.meta.warnings,
         ];
+        cachedResult.meta.notes = cachedResult.meta.notes ?? [];
 
         return cachedResult;
       }
