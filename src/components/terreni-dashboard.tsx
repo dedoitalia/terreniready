@@ -315,6 +315,7 @@ export default function TerreniDashboard() {
   const streamReconnectTimerRef = useRef<number | null>(null);
   const streamReconnectNoticeRef = useRef(false);
   const terrainRowRefs = useRef(new Map<string, HTMLTableRowElement>());
+  const dossierRef = useRef<HTMLElement | null>(null);
 
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
@@ -373,21 +374,20 @@ export default function TerreniDashboard() {
     }
 
     const activeRow = terrainRowRefs.current.get(activeTerrainId);
+    const dossier = dossierRef.current;
 
-    if (!activeRow) {
+    if (!activeRow || !dossier) {
       return;
     }
 
     const alignSelectedRow = () => {
       const rowRect = activeRow.getBoundingClientRect();
-      const targetTop = 112;
-      const targetBottom = Math.max(targetTop + 120, window.innerHeight - 180);
+      const dossierRect = dossier.getBoundingClientRect();
+      const delta = rowRect.top - dossierRect.top;
 
-      if (rowRect.top >= targetTop && rowRect.top <= targetBottom) {
+      if (Math.abs(delta) <= 8) {
         return;
       }
-
-      const delta = rowRect.top - targetTop;
 
       window.scrollBy({
         top: delta,
@@ -1288,6 +1288,7 @@ export default function TerreniDashboard() {
           </div>
 
           <aside
+            ref={dossierRef}
             className="terrain-shell terrain-shell-dark terrain-sticky-rail p-6"
           >
             <div className="terrain-keyline terrain-keyline-dark">
