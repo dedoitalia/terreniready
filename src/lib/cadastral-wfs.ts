@@ -251,6 +251,28 @@ function bboxForAnchorChunk(anchors: TerrainSearchAnchor[]) {
   return { south, west, north, east } satisfies CadastralBoundingBox;
 }
 
+function splitAnchorChunk(anchors: TerrainSearchAnchor[]) {
+  if (anchors.length <= 1) {
+    return [anchors, []] satisfies [TerrainSearchAnchor[], TerrainSearchAnchor[]];
+  }
+
+  const south = Math.min(...anchors.map((anchor) => anchor.lat));
+  const north = Math.max(...anchors.map((anchor) => anchor.lat));
+  const west = Math.min(...anchors.map((anchor) => anchor.lng));
+  const east = Math.max(...anchors.map((anchor) => anchor.lng));
+  const latSpan = north - south;
+  const lngSpan = east - west;
+  const sorted = [...anchors].sort((left, right) =>
+    latSpan >= lngSpan ? left.lat - right.lat : left.lng - right.lng,
+  );
+  const splitIndex = Math.ceil(sorted.length / 2);
+
+  return [
+    sorted.slice(0, splitIndex),
+    sorted.slice(splitIndex),
+  ] satisfies [TerrainSearchAnchor[], TerrainSearchAnchor[]];
+}
+
 function splitBoundingBox(bbox: CadastralBoundingBox) {
   const latSpan = bbox.north - bbox.south;
   const lngSpan = bbox.east - bbox.west;
@@ -483,29 +505,12 @@ type AnchorChunkFetchResult = {
   hitPageCap: boolean;
 };
 
-async function fetchParcelsForAnchorChunk(
-  provinceName: string,
-  blockLabel: string,
-  anchors: TerrainSearchAnchor[],
-  remainingSplits: number,
-  reporter?: ProgressReporter,
-): Promise<AnchorChunkFetchResult> {
-  return fetchParcelsForBoundingBox(
-    provinceName,
-    blockLabel,
-    bboxForAnchorChunk(anchors),
-    remainingSplits,
-    reporter,
-  );
-}
-
-async function fetchParcelsForBoundingBox(
+async function fetchParcelsForBoundingBoxOnce(
   provinceName: string,
   blockLabel: string,
   bbox: CadastralBoundingBox,
-  remainingSplits: number,
   reporter?: ProgressReporter,
-): Promise<AnchorChunkFetchResult> {
+) {
   const parcelMap = new Map<string, CadastralParcelFeature>();
   let nextUrl: string | null = buildWfsUrl(
     bbox.south,
@@ -535,9 +540,120 @@ async function fetchParcelsForBoundingBox(
     hitPageCap = true;
   }
 
-  if ((parcelMap.size === 0 || hitPageCap) && remainingSplits > 0) {
+  return {
+    parcels: Array.from(parcelMap.values()),
+    hitPageCap,
+  } satisfies AnchorChunkFetchResult;
+}
+
+async function fetchParcelsForAnchorChunk(
+  provinceName: string,
+  blockLabel: string,
+  anchors: TerrainSearchAnchor[],
+  remainingSplits: number,
+  reporter?: ProgressReporter,
+): Promise<AnchorChunkFetchResult> {
+  const bbox = bboxForAnchorChunk(anchors);
+  const chunkResult = await fetchParcelsForBoundingBoxOnce(
+    provinceName,
+    blockLabel,
+    bbox,
+    reporter,
+  );
+
+  if (remainingSplits <= 0) {
+    return chunkResult;
+  }
+
+  if (chunkResult.hitPageCap && anchors.length > 1) {
+    reportProgress(
+      reporter,
+      `${provinceName}: blocco particelle ${blockLabel} supera la paginazione WFS, lo divido per gruppi di ancore.`,
+    );
+
+    const [leftAnchors, rightAnchors] = splitAnchorChunk(anchors);
+
+    const [leftResult, rightResult] = await Promise.all([
+      fetchParcelsForAnchorChunk(
+        provinceName,
+        `${blockLabel}.a`,
+        leftAnchors,
+        remainingSplits - 1,
+        reporter,
+      ),
+      fetchParcelsForAnchorChunk(
+        provinceName,
+        `${blockLabel}.b`,
+        rightAnchors,
+        remainingSplits - 1,
+        reporter,
+      ),
+    ]);
+
+    return {
+      parcels: [...leftResult.parcels, ...rightResult.parcels],
+      hitPageCap:
+        chunkResult.hitPageCap ||
+        leftResult.hitPageCap ||
+        rightResult.hitPageCap,
+    };
+  }
+
+  if (chunkResult.parcels.length === 0 && anchors.length > 1) {
+    reportProgress(
+      reporter,
+      `${provinceName}: blocco particelle ${blockLabel} vuoto su bbox aggregato, verifico le ancore singolarmente.`,
+    );
+    const anchorResults: AnchorChunkFetchResult[] = [];
+
+    for (const [anchorIndex, anchor] of anchors.entries()) {
+      anchorResults.push(
+        await fetchParcelsForAnchorChunk(
+          provinceName,
+          `${blockLabel}.${anchorIndex + 1}`,
+          [anchor],
+          remainingSplits - 1,
+          reporter,
+        ),
+      );
+    }
+
+    return {
+      parcels: anchorResults.flatMap((result) => result.parcels),
+      hitPageCap: anchorResults.some((result) => result.hitPageCap),
+    };
+  }
+
+  if ((chunkResult.parcels.length === 0 || chunkResult.hitPageCap) && remainingSplits > 0) {
+    return fetchParcelsForBoundingBox(
+      provinceName,
+      blockLabel,
+      bbox,
+      remainingSplits - 1,
+      reporter,
+    );
+  }
+
+  return chunkResult;
+}
+
+async function fetchParcelsForBoundingBox(
+  provinceName: string,
+  blockLabel: string,
+  bbox: CadastralBoundingBox,
+  remainingSplits: number,
+  reporter?: ProgressReporter,
+): Promise<AnchorChunkFetchResult> {
+  const chunkResult = await fetchParcelsForBoundingBoxOnce(
+    provinceName,
+    blockLabel,
+    bbox,
+    reporter,
+  );
+
+  if ((chunkResult.parcels.length === 0 || chunkResult.hitPageCap) && remainingSplits > 0) {
     const splitReason =
-      parcelMap.size === 0
+      chunkResult.parcels.length === 0
         ? "vuoto su bbox aggregato"
         : `tronco oltre ${CADASTRAL_WFS_MAX_PAGES} pagine`;
 
@@ -567,14 +683,12 @@ async function fetchParcelsForBoundingBox(
 
     return {
       parcels: [...leftResult.parcels, ...rightResult.parcels],
-      hitPageCap: hitPageCap || leftResult.hitPageCap || rightResult.hitPageCap,
+      hitPageCap:
+        chunkResult.hitPageCap || leftResult.hitPageCap || rightResult.hitPageCap,
     };
   }
 
-  return {
-    parcels: Array.from(parcelMap.values()),
-    hitPageCap,
-  };
+  return chunkResult;
 }
 
 function parcelFoglio(reference: string) {
