@@ -631,6 +631,7 @@ async function fetchParcelsForAnchorChunk(
       bbox,
       remainingSplits - 1,
       reporter,
+      chunkResult,
     );
   }
 
@@ -643,13 +644,16 @@ async function fetchParcelsForBoundingBox(
   bbox: CadastralBoundingBox,
   remainingSplits: number,
   reporter?: ProgressReporter,
+  initialResult?: AnchorChunkFetchResult,
 ): Promise<AnchorChunkFetchResult> {
-  const chunkResult = await fetchParcelsForBoundingBoxOnce(
-    provinceName,
-    blockLabel,
-    bbox,
-    reporter,
-  );
+  const chunkResult =
+    initialResult ??
+    (await fetchParcelsForBoundingBoxOnce(
+      provinceName,
+      blockLabel,
+      bbox,
+      reporter,
+    ));
 
   if ((chunkResult.parcels.length === 0 || chunkResult.hitPageCap) && remainingSplits > 0) {
     const splitReason =
