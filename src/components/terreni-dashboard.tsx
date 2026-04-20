@@ -177,14 +177,6 @@ function safeCdata(value: string) {
   return value.replaceAll("]]>", "]]]]><![CDATA[>");
 }
 
-function safeFilenameSegment(value: string) {
-  return value
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, "-")
-    .replaceAll(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
@@ -353,6 +345,7 @@ export default function TerreniDashboard() {
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const [scanJob, setScanJob] = useState<LiveScanState | null>(null);
   const [activeTerrainId, setActiveTerrainId] = useState<string>();
+  const [isTerrainPreviewOpen, setIsTerrainPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -393,6 +386,9 @@ export default function TerreniDashboard() {
   const sourceById = new Map(
     (scanData?.sources ?? []).map((source) => [source.id, source]),
   );
+  const activeSource = activeTerrain
+    ? sourceById.get(activeTerrain.closestSourceId)
+    : undefined;
   const sortedTerrains = [...(scanData?.terrains ?? [])].sort((left, right) => {
     switch (terrainSortMode) {
       case "comune-asc":
@@ -438,6 +434,26 @@ export default function TerreniDashboard() {
       streamRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTerrainPreviewOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsTerrainPreviewOpen(false);
+      }
+    };
+
+    document.body.classList.add("overflow-hidden");
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.classList.remove("overflow-hidden");
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isTerrainPreviewOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined" || window.innerWidth < 1280 || !activeTerrainId) {
@@ -1481,21 +1497,10 @@ export default function TerreniDashboard() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        void downloadTerrainKmz(
-                          [activeTerrain],
-                          `terreno-${safeFilenameSegment(activeTerrain.name || activeTerrain.id)}.kmz`,
-                        ).catch((downloadError) => {
-                          setError(
-                            downloadError instanceof Error
-                              ? downloadError.message
-                              : "Export del poligono KMZ non riuscito. Riprova tra pochi secondi.",
-                          );
-                        });
-                      }}
+                      onClick={() => setIsTerrainPreviewOpen(true)}
                       className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.08)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.14)]"
                     >
-                      Scarica poligono KMZ
+                      Visualizza poligono
                     </button>
                   </div>
                   <a
@@ -1526,7 +1531,117 @@ export default function TerreniDashboard() {
               </p>
             )}
           </aside>
-        </section>
+      </section>
+
+      {isTerrainPreviewOpen && activeTerrain ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,16,11,0.72)] px-4 py-6 backdrop-blur-sm">
+          <div className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px] border border-[rgba(255,255,255,0.12)] bg-[#132017] shadow-[0_36px_120px_rgba(10,17,12,0.45)]">
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5 text-white">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.2em] text-[#9eb399]">
+                  Anteprima poligono
+                </div>
+                <h3 className="mt-2 text-2xl font-semibold tracking-[-0.04em]">
+                  {activeTerrain.name}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-[#d4dfd1]">
+                  Poligono catastale visualizzato nel SaaS con buffer operativo e
+                  particelle WMS ufficiali.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTerrainPreviewOpen(false)}
+                className="inline-flex rounded-full border border-white/12 bg-white/8 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/12"
+              >
+                Chiudi
+              </button>
+            </div>
+
+            <div className="grid gap-5 overflow-y-auto px-6 py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="min-h-[58vh] overflow-hidden rounded-[28px] border border-white/10 bg-[#0e1711]">
+                <TerrainMap
+                  selectedProvinceIds={[activeTerrain.provinceId]}
+                  sources={activeSource ? [activeSource] : []}
+                  terrains={[activeTerrain]}
+                  activeTerrainId={activeTerrain.id}
+                  onSelectTerrainId={setActiveTerrainId}
+                />
+              </div>
+
+              <div className="space-y-4 text-sm leading-6 text-[#dce7d9]">
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                    Sintesi rapida
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    <p>
+                      <span className="text-[#9eb399]">Uso:</span>{" "}
+                      {landuseLabel(activeTerrain.landuse)}
+                    </p>
+                    <p>
+                      <span className="text-[#9eb399]">Distanza:</span>{" "}
+                      {formatMeters(activeTerrain.distanceMeters)}
+                    </p>
+                    <p>
+                      <span className="text-[#9eb399]">Superficie:</span>{" "}
+                      {formatSqm(activeTerrain.areaSqm)}
+                    </p>
+                    <p>
+                      <span className="text-[#9eb399]">Comune:</span>{" "}
+                      {terrainComuneLabel(activeTerrain, sourceById)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                    Fonte associata
+                  </div>
+                  <div className="mt-3 text-base font-semibold text-white">
+                    {activeTerrain.closestSourceName}
+                  </div>
+                  <p className="mt-1 text-sm text-[#d4dfd1]">
+                    {
+                      SOURCE_CATEGORY_MAP[activeTerrain.closestSourceCategoryId]
+                        .label
+                    }
+                  </p>
+                  <p className="mt-2 text-xs text-[#a9bda5]">
+                    Provider terreno: {activeTerrain.providerLabel}
+                  </p>
+                </div>
+
+                <div className="rounded-[24px] border border-white/10 bg-[#101a13] p-5">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                    Azioni
+                  </div>
+                  <div className="mt-3 flex flex-col gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsTerrainPreviewOpen(false);
+                        focusActiveTerrainOnAtlas();
+                      }}
+                      className="inline-flex justify-center rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
+                    >
+                      Vai alla mappa principale
+                    </button>
+                    <a
+                      href={terrainMapUrl(activeTerrain)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex justify-center rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/10"
+                    >
+                      Apri centroide in Google Maps
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       </div>
     </div>
   );
