@@ -52,6 +52,18 @@ function downloadBlob(contents: BlobPart, mimeType: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function safeParseJson<T>(raw: string): T | null {
+  if (!raw.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
@@ -201,10 +213,20 @@ export default function TerreniDashboard() {
           });
           window.clearTimeout(timeoutId);
 
-          const payload = (await response.json()) as ScanResponse & { error?: string };
+          const rawPayload = await response.text();
+          const payload = safeParseJson<ScanResponse & { error?: string }>(rawPayload);
 
           if (!response.ok) {
-            throw new Error(payload.error ?? "Errore durante la scansione.");
+            throw new Error(
+              payload?.error ??
+                "Il server non ha restituito una risposta valida. Riprova tra pochi secondi.",
+            );
+          }
+
+          if (!payload) {
+            throw new Error(
+              "Risposta non valida dal server. Probabile riavvio o deploy in corso, riprova tra pochi secondi.",
+            );
           }
 
           setScanData(payload);
