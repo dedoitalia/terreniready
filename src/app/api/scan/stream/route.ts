@@ -64,7 +64,11 @@ export async function GET(request: NextRequest) {
           clearInterval(heartbeatId);
         }
 
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // The client may have already closed the stream.
+        }
       };
 
       heartbeatId = setInterval(() => {
@@ -129,6 +133,9 @@ export async function GET(request: NextRequest) {
           close();
         }
       })();
+    },
+    cancel() {
+      // The client interrupted the connection; the stream cleanup is handled in `close`.
     },
   });
 
