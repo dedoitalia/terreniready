@@ -45,6 +45,7 @@ const TERRAIN_OBSTACLE_MARGIN_METERS = 25;
 const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
 const TERRAIN_OBSTACLE_CLUSTER_RADIUS_METERS = 160;
 const OBSTACLE_ANCHORS_PER_CHUNK = 6;
+const OBSTACLE_CHUNK_SPLIT_DEPTH = 2;
 
 const EXCLUDED_URBAN_LANDUSES = new Set(["residential", "industrial", "commercial"]);
 const ROAD_SELECTORS = [
@@ -756,6 +757,28 @@ function buildTerrainObstacleAnchors(terrains: TerrainFeature[]) {
   })) satisfies TerrainObstacleAnchor[];
 }
 
+function splitTerrainObstacleAnchorChunk(anchors: TerrainObstacleAnchor[]) {
+  if (anchors.length <= 1) {
+    return [anchors, []] satisfies [TerrainObstacleAnchor[], TerrainObstacleAnchor[]];
+  }
+
+  const south = Math.min(...anchors.map((anchor) => anchor.lat));
+  const north = Math.max(...anchors.map((anchor) => anchor.lat));
+  const west = Math.min(...anchors.map((anchor) => anchor.lng));
+  const east = Math.max(...anchors.map((anchor) => anchor.lng));
+  const latSpan = north - south;
+  const lngSpan = east - west;
+  const sorted = [...anchors].sort((left, right) =>
+    latSpan >= lngSpan ? left.lat - right.lat : left.lng - right.lng,
+  );
+  const splitIndex = Math.ceil(sorted.length / 2);
+
+  return [
+    sorted.slice(0, splitIndex),
+    sorted.slice(splitIndex),
+  ] satisfies [TerrainObstacleAnchor[], TerrainObstacleAnchor[]];
+}
+
 function buildAroundStatementsForTerrainAnchors(
   selectors: ReadonlyArray<{ key: string; value?: string }>,
   anchors: TerrainObstacleAnchor[],
@@ -833,6 +856,160 @@ function prepareLineObstacle(element: OverpassElement) {
   }
 }
 
+type TerrainObstacleChunkResult = TerrainObstacleLookup & {
+  warningTriggered: boolean;
+};
+
+function createEmptyTerrainObstacleChunkResult(
+  warning: string | null = null,
+): TerrainObstacleChunkResult {
+  return {
+    buildings: [],
+    urbanAreas: [],
+    roads: [],
+    warning,
+    warningTriggered: Boolean(warning),
+  };
+}
+
+function mergeTerrainObstacleChunkResults(
+  results: TerrainObstacleChunkResult[],
+): TerrainObstacleChunkResult {
+  const buildingMap = new Map<string, PreparedPolygonObstacle>();
+  const urbanAreaMap = new Map<string, PreparedPolygonObstacle>();
+  const roadMap = new Map<string, PreparedLineObstacle>();
+  let warning: string | null = null;
+
+  for (const result of results) {
+    for (const building of result.buildings) {
+      buildingMap.set(building.id, building);
+    }
+
+    for (const urbanArea of result.urbanAreas) {
+      urbanAreaMap.set(urbanArea.id, urbanArea);
+    }
+
+    for (const road of result.roads) {
+      roadMap.set(road.id, road);
+    }
+
+    warning = warning ?? result.warning;
+  }
+
+  return {
+    buildings: Array.from(buildingMap.values()),
+    urbanAreas: Array.from(urbanAreaMap.values()),
+    roads: Array.from(roadMap.values()),
+    warning,
+    warningTriggered: results.some((result) => result.warningTriggered),
+  };
+}
+
+async function fetchTerrainObstaclesForChunk(
+  provinceName: string,
+  blockLabel: string,
+  anchorChunk: TerrainObstacleAnchor[],
+  reporter?: ProgressReporter,
+  remainingSplits = OBSTACLE_CHUNK_SPLIT_DEPTH,
+): Promise<TerrainObstacleChunkResult> {
+  const query = `
+[out:json][timeout:45];
+(
+${buildAroundStatementsForTerrainAnchors([{ key: "building" }], anchorChunk)}
+${buildAroundStatementsForTerrainAnchors(URBAN_AREA_SELECTORS, anchorChunk)}
+${buildAroundStatementsForTerrainAnchors(ROAD_SELECTORS, anchorChunk)}
+);
+out geom;
+`;
+
+  try {
+    const data = await fetchOverpass(
+      query,
+      reporter,
+      `${provinceName} filtri blocco ${blockLabel}`,
+    );
+    const buildingMap = new Map<string, PreparedPolygonObstacle>();
+    const urbanAreaMap = new Map<string, PreparedPolygonObstacle>();
+    const roadMap = new Map<string, PreparedLineObstacle>();
+
+    for (const element of data.elements) {
+      if (element.type !== "way") {
+        continue;
+      }
+
+      const tags = element.tags ?? {};
+      const normalizedLanduse = tags.landuse?.trim().toLowerCase();
+      const normalizedHighway = tags.highway?.trim().toLowerCase();
+
+      if (tags.building) {
+        const prepared = preparePolygonObstacle(element);
+
+        if (prepared) {
+          buildingMap.set(prepared.id, prepared);
+        }
+      }
+
+      if (normalizedLanduse && EXCLUDED_URBAN_LANDUSES.has(normalizedLanduse)) {
+        const prepared = preparePolygonObstacle(element);
+
+        if (prepared) {
+          urbanAreaMap.set(prepared.id, prepared);
+        }
+      }
+
+      if (normalizedHighway) {
+        const prepared = prepareLineObstacle(element);
+
+        if (prepared) {
+          roadMap.set(prepared.id, prepared);
+        }
+      }
+    }
+
+    return {
+      buildings: Array.from(buildingMap.values()),
+      urbanAreas: Array.from(urbanAreaMap.values()),
+      roads: Array.from(roadMap.values()),
+      warning: null,
+      warningTriggered: false,
+    };
+  } catch (error) {
+    const recoverable = error instanceof OverpassRateLimitError || isRecoverableOverpassError(error);
+
+    if (recoverable && remainingSplits > 0 && anchorChunk.length > 1) {
+      reportProgress(
+        reporter,
+        `${provinceName}: blocco filtri ${blockLabel} troppo pesante per i provider live, lo divido in sottoblocchi.`,
+      );
+
+      const [leftChunk, rightChunk] = splitTerrainObstacleAnchorChunk(anchorChunk);
+      const branchResults = await Promise.all(
+        [leftChunk, rightChunk]
+          .filter((chunk) => chunk.length > 0)
+          .map((chunk, index) =>
+            fetchTerrainObstaclesForChunk(
+              provinceName,
+              `${blockLabel}.${index === 0 ? "a" : "b"}`,
+              chunk,
+              reporter,
+              remainingSplits - 1,
+            ),
+          ),
+      );
+
+      return mergeTerrainObstacleChunkResults(branchResults);
+    }
+
+    if (recoverable) {
+      const warning = `${provinceName}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${blockLabel}.`;
+      reportProgress(reporter, warning);
+      return createEmptyTerrainObstacleChunkResult(warning);
+    }
+
+    throw error;
+  }
+}
+
 async function fetchTerrainObstaclesForProvince(
   provinceId: ProvinceId,
   terrains: TerrainFeature[],
@@ -869,64 +1046,31 @@ async function fetchTerrainObstaclesForProvince(
       reporter,
       `${province.name}: blocco filtri ${index + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkTerrainCount} terreni.`,
     );
-    const query = `
-[out:json][timeout:45];
-(
-${buildAroundStatementsForTerrainAnchors([{ key: "building" }], anchorChunk)}
-${buildAroundStatementsForTerrainAnchors(URBAN_AREA_SELECTORS, anchorChunk)}
-${buildAroundStatementsForTerrainAnchors(ROAD_SELECTORS, anchorChunk)}
-);
-out geom;
-`;
+    const chunkResult = await fetchTerrainObstaclesForChunk(
+      province.name,
+      `${index + 1}/${anchorChunks.length}`,
+      anchorChunk,
+      reporter,
+    );
 
-    try {
-      const data = await fetchOverpass(
-        query,
-        reporter,
-        `${province.name} filtri blocco ${index + 1}/${anchorChunks.length}`,
-      );
+    for (const building of chunkResult.buildings) {
+      buildingMap.set(building.id, building);
+    }
 
-      for (const element of data.elements) {
-        if (element.type !== "way") {
-          continue;
-        }
+    for (const urbanArea of chunkResult.urbanAreas) {
+      urbanAreaMap.set(urbanArea.id, urbanArea);
+    }
 
-        const tags = element.tags ?? {};
-        const normalizedLanduse = tags.landuse?.trim().toLowerCase();
-        const normalizedHighway = tags.highway?.trim().toLowerCase();
+    for (const road of chunkResult.roads) {
+      roadMap.set(road.id, road);
+    }
 
-        if (tags.building) {
-          const prepared = preparePolygonObstacle(element);
+    if (!warning && chunkResult.warning) {
+      warning = chunkResult.warning;
+    }
 
-          if (prepared) {
-            buildingMap.set(prepared.id, prepared);
-          }
-        }
-
-        if (normalizedLanduse && EXCLUDED_URBAN_LANDUSES.has(normalizedLanduse)) {
-          const prepared = preparePolygonObstacle(element);
-
-          if (prepared) {
-            urbanAreaMap.set(prepared.id, prepared);
-          }
-        }
-
-        if (normalizedHighway) {
-          const prepared = prepareLineObstacle(element);
-
-          if (prepared) {
-            roadMap.set(prepared.id, prepared);
-          }
-        }
-      }
-    } catch (error) {
-      if (error instanceof OverpassRateLimitError) {
-        warning = `${province.name}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${index + 1}/${anchorChunks.length}.`;
-        reportProgress(reporter, warning);
-        break;
-      }
-
-      throw error;
+    if (chunkResult.warningTriggered) {
+      break;
     }
   }
 
