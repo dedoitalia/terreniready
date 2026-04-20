@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import JSZip from "jszip";
-import { startTransition, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 
 import { PROVINCES, PROVINCE_MAP } from "@/lib/province-data";
 import { SOURCE_CATEGORIES, SOURCE_CATEGORY_MAP, landuseLabel } from "@/lib/source-types";
@@ -135,11 +135,7 @@ async function downloadKmz(data: ScanResponse) {
 }
 
 export default function TerreniDashboard() {
-  const [selectedProvinceIds, setSelectedProvinceIds] = useState<ProvinceId[]>([
-    "PT",
-    "PI",
-    "PO",
-  ]);
+  const [selectedProvinceIds, setSelectedProvinceIds] = useState<ProvinceId[]>(["PT"]);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<SourceCategoryId[]>([
     "fuel",
     "bodyshop",
@@ -148,11 +144,27 @@ export default function TerreniDashboard() {
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const [activeTerrainId, setActiveTerrainId] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
   );
+
+  useEffect(() => {
+    if (!loading) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      setLoadingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [loading]);
 
   async function runScan() {
     if (selectedProvinceIds.length === 0) {
@@ -166,21 +178,28 @@ export default function TerreniDashboard() {
     }
 
     setLoading(true);
+    setLoadingSeconds(0);
     setError(null);
 
     startTransition(() => {
       void (async () => {
+        let timeoutId: number | undefined;
+
         try {
+          const controller = new AbortController();
+          timeoutId = window.setTimeout(() => controller.abort(), 90_000);
           const response = await fetch("/api/scan", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
+            signal: controller.signal,
             body: JSON.stringify({
               provinceIds: selectedProvinceIds,
               categoryIds: selectedCategoryIds,
             }),
           });
+          window.clearTimeout(timeoutId);
 
           const payload = (await response.json()) as ScanResponse & { error?: string };
 
@@ -194,11 +213,17 @@ export default function TerreniDashboard() {
           setScanData(null);
           setActiveTerrainId(undefined);
           setError(
-            scanError instanceof Error
+            scanError instanceof DOMException && scanError.name === "AbortError"
+              ? "La scansione sta impiegando troppo. Prova con una sola provincia o meno categorie."
+              : scanError instanceof Error
               ? scanError.message
               : "Errore durante la scansione.",
           );
         } finally {
+          if (timeoutId) {
+            window.clearTimeout(timeoutId);
+          }
+          setLoadingSeconds(0);
           setLoading(false);
         }
       })();
@@ -334,6 +359,15 @@ export default function TerreniDashboard() {
                   Export CSV
                 </button>
               </div>
+
+              {loading ? (
+                <div className="rounded-[24px] border border-[#d8dfd1] bg-[#f8faf5] p-4 text-sm leading-6 text-[#415441]">
+                  Scansione reale in corso da {loadingSeconds}s.
+                  {selectedProvinceIds.length > 1 || selectedCategoryIds.length > 1
+                    ? " Con piu province o categorie puo richiedere 20-60 secondi."
+                    : " Sto interrogando OpenStreetMap e calcolando i poligoni agricoli nel buffer dei 350 metri."}
+                </div>
+              ) : null}
 
               <button
                 type="button"

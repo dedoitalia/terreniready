@@ -29,6 +29,7 @@ const MAX_TERRAINS = 250;
 const OVERPASS_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
+const SOURCES_PER_AGRI_CHUNK = 18;
 
 type OverpassElement = {
   type: "node" | "way";
@@ -357,19 +358,64 @@ out center;
     .filter((source): source is SourceFeature => source !== null);
 }
 
-async function fetchAgriculturalWays(provinceId: ProvinceId) {
-  const province = PROVINCE_MAP[provinceId];
-  const query = `
-[out:json][timeout:60];
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
+function buildAroundStatements(
+  selectors: Array<{ key: string; value?: string }>,
+  sources: SourceFeature[],
+) {
+  return sources
+    .flatMap((source) =>
+      selectors.map((selector) => {
+        const filter = selector.value
+          ? `["${selector.key}"="${selector.value}"]`
+          : `["${selector.key}"]`;
+
+        return `way${filter}(around:${SEARCH_RADIUS_METERS},${source.latitude},${source.longitude});`;
+      }),
+    )
+    .join("\n");
+}
+
+async function fetchAgriculturalWaysNearSources(
+  provinceId: ProvinceId,
+  provinceSources: SourceFeature[],
+) {
+  if (provinceSources.length === 0) {
+    return [] as OverpassElement[];
+  }
+
+  const sourceChunks = chunkArray(provinceSources, SOURCES_PER_AGRI_CHUNK);
+  const allElements: OverpassElement[] = [];
+
+  for (const sourceChunk of sourceChunks) {
+    const query = `
+[out:json][timeout:45];
 (
-${buildSelectorStatements(AGRICULTURAL_SELECTORS, province.bbox, ["way"])}
+${buildAroundStatements(AGRICULTURAL_SELECTORS, sourceChunk)}
 );
 out geom;
 `;
 
-  const data = await fetchOverpass(query);
+    const data = await fetchOverpass(query);
+    allElements.push(...data.elements);
+  }
 
-  return data.elements;
+  const unique = new Map<string, OverpassElement>();
+
+  for (const element of allElements) {
+    unique.set(`${element.type}-${element.id}`, element);
+  }
+
+  return Array.from(unique.values()).filter((element) => element.type === "way");
 }
 
 function mergeSources(sources: SourceFeature[]) {
@@ -508,7 +554,10 @@ async function scanProvince(
   ).sort((left, right) =>
     left.name.localeCompare(right.name, "it"),
   );
-  const landWays = await fetchAgriculturalWays(provinceId);
+  const landWays =
+    sources.length === 0
+      ? []
+      : await fetchAgriculturalWaysNearSources(provinceId, sources);
 
   const terrains = landWays
     .map((element) => computeTerrainCandidate(provinceId, element, sources))
