@@ -76,6 +76,107 @@ function sleep(ms: number) {
   });
 }
 
+function isTransientResponse(
+  status: number,
+  raw: string,
+  contentType: string | null,
+) {
+  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+
+  if (!raw.trim()) {
+    return true;
+  }
+
+  const normalizedContentType = contentType?.toLowerCase() ?? "";
+  const normalizedRaw = raw.trim().toLowerCase();
+
+  if (normalizedContentType.includes("text/html")) {
+    return true;
+  }
+
+  return (
+    normalizedRaw.startsWith("<!doctype html") ||
+    normalizedRaw.startsWith("<html") ||
+    normalizedRaw.includes("<body")
+  );
+}
+
+function buildStartErrorMessage(
+  status: number,
+  raw: string,
+  contentType: string | null,
+  apiError?: string,
+) {
+  if (apiError) {
+    return apiError;
+  }
+
+  if (status === 429) {
+    return "Il motore di scansione è temporaneamente saturo. Riprova tra pochi secondi.";
+  }
+
+  if (isTransientResponse(status, raw, contentType)) {
+    return "Il server si sta riattivando o sta completando un aggiornamento. Riprova tra 10-20 secondi.";
+  }
+
+  return "Il server non ha restituito una risposta valida. Riprova tra pochi secondi.";
+}
+
+async function startScanJobWithRetry(
+  provinceIds: ProvinceId[],
+  categoryIds: SourceCategoryId[],
+) {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const startResponse = await fetch("/api/scan/jobs", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        provinceIds,
+        categoryIds,
+      }),
+    });
+
+    const startRaw = await startResponse.text();
+    const startPayload = safeParseJson<ScanJobCreateResponse & { error?: string }>(
+      startRaw,
+    );
+
+    if (startResponse.ok && startPayload?.jobId) {
+      return startPayload.jobId;
+    }
+
+    lastError = new Error(
+      buildStartErrorMessage(
+        startResponse.status,
+        startRaw,
+        startResponse.headers.get("content-type"),
+        startPayload?.error,
+      ),
+    );
+
+    if (
+      attempt === 2 ||
+      !isTransientResponse(
+        startResponse.status,
+        startRaw,
+        startResponse.headers.get("content-type"),
+      )
+    ) {
+      throw lastError;
+    }
+
+    await sleep(1400 * (attempt + 1));
+  }
+
+  throw lastError ?? new Error("Impossibile avviare la scansione.");
+}
+
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
@@ -227,47 +328,35 @@ export default function TerreniDashboard() {
     startTransition(() => {
       void (async () => {
         try {
-          const startResponse = await fetch("/api/scan/jobs", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              provinceIds: selectedProvinceIds,
-              categoryIds: selectedCategoryIds,
-            }),
-          });
-          const startRaw = await startResponse.text();
-          const startPayload = safeParseJson<
-            ScanJobCreateResponse & { error?: string }
-          >(startRaw);
-
-          if (!startResponse.ok) {
-            throw new Error(
-              startPayload?.error ??
-                "Il server non ha restituito una risposta valida. Riprova tra pochi secondi.",
-            );
-          }
-
-          if (!startPayload?.jobId) {
-            throw new Error("Impossibile ottenere il job di scansione.");
-          }
+          const jobId = await startScanJobWithRetry(
+            selectedProvinceIds,
+            selectedCategoryIds,
+          );
 
           const startedAt = Date.now();
 
           while (Date.now() - startedAt < 180_000) {
-            const statusResponse = await fetch(
-              `/api/scan/jobs/${startPayload.jobId}`,
-              {
-                cache: "no-store",
-              },
-            );
+            const statusResponse = await fetch(`/api/scan/jobs/${jobId}`, {
+              cache: "no-store",
+            });
             const statusRaw = await statusResponse.text();
             const snapshot = safeParseJson<ScanJobSnapshot & { error?: string }>(
               statusRaw,
             );
+            const contentType = statusResponse.headers.get("content-type");
 
             if (!statusResponse.ok) {
+              if (
+                isTransientResponse(
+                  statusResponse.status,
+                  statusRaw,
+                  contentType,
+                )
+              ) {
+                await sleep(1500);
+                continue;
+              }
+
               throw new Error(
                 snapshot?.error ??
                   "Il job di scansione non è più disponibile. Riprova.",
@@ -275,9 +364,18 @@ export default function TerreniDashboard() {
             }
 
             if (!snapshot) {
-              throw new Error(
-                "Il server ha restituito uno stato scansione non valido. Riprova tra pochi secondi.",
-              );
+              if (
+                isTransientResponse(
+                  statusResponse.status,
+                  statusRaw,
+                  contentType,
+                )
+              ) {
+                await sleep(1500);
+                continue;
+              }
+
+              throw new Error("Lo stato della scansione non è leggibile. Riprova tra pochi secondi.");
             }
 
             setScanJob(snapshot);
