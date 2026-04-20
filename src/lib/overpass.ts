@@ -1,22 +1,18 @@
 import {
-  area,
   booleanPointInPolygon,
-  centerOfMass,
   distance,
   lineIntersect,
   lineString,
   point,
-  pointToPolygonDistance,
   polygon,
 } from "@turf/turf";
 
+import { fetchCadastralTerrainsNearSources } from "@/lib/cadastral-wfs";
 import { PROVINCE_MAP } from "@/lib/province-data";
 import { fetchFuelSourcesFromMimit } from "@/lib/mimit-fuel";
 import {
-  AGRICULTURAL_SELECTORS,
   SOURCE_CATEGORIES,
   SOURCE_CATEGORY_MAP,
-  landuseLabel,
 } from "@/lib/source-types";
 import type {
   BoundingBox,
@@ -40,15 +36,14 @@ const MAX_TERRAINS = 250;
 const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
-const ANCHORS_PER_AGRI_CHUNK = 24;
-const TERRAINS_PER_OBSTACLE_CHUNK = 20;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
 const OVERPASS_MAX_CYCLES = 2;
 const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
 const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
 const TERRAIN_OBSTACLE_MARGIN_METERS = 25;
 const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
-const BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
+const TERRAIN_OBSTACLE_CLUSTER_RADIUS_METERS = 240;
+const OBSTACLE_ANCHORS_PER_CHUNK = 12;
 
 const EXCLUDED_URBAN_LANDUSES = new Set(["residential", "industrial", "commercial"]);
 const ROAD_SELECTORS = [
@@ -144,12 +139,12 @@ type TerrainFilterStats = {
   rejectedByRoads: number;
 };
 
-type TerrainSearchAnchor = {
+type TerrainObstacleAnchor = {
   id: string;
   lat: number;
   lng: number;
   probeRadiusMeters: number;
-  sourceIds: string[];
+  terrainIds: string[];
 };
 
 class OverpassRateLimitError extends Error {
@@ -658,30 +653,6 @@ out center;
   return sources;
 }
 
-function terrainClusterRadiusForSourceCount(sourceCount: number) {
-  if (sourceCount >= 220) {
-    return 460;
-  }
-
-  if (sourceCount >= 120) {
-    return 340;
-  }
-
-  return BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS;
-}
-
-function agriAnchorChunkSize(sourceCount: number) {
-  if (sourceCount >= 220) {
-    return 40;
-  }
-
-  if (sourceCount >= 120) {
-    return 32;
-  }
-
-  return ANCHORS_PER_AGRI_CHUNK;
-}
-
 function chunkArray<T>(items: T[], size: number) {
   const chunks: T[][] = [];
 
@@ -692,53 +663,35 @@ function chunkArray<T>(items: T[], size: number) {
   return chunks;
 }
 
-function buildAroundStatements(
-  selectors: Array<{ key: string; value?: string }>,
-  anchors: TerrainSearchAnchor[],
-) {
-  return anchors
-    .flatMap((anchor) =>
-      selectors.map((selector) => {
-        const filter = selector.value
-          ? `["${selector.key}"="${selector.value}"]`
-          : `["${selector.key}"]`;
-
-        return `way${filter}(around:${anchor.probeRadiusMeters},${anchor.lat},${anchor.lng});`;
-      }),
-    )
-    .join("\n");
-}
-
-function buildTerrainSearchAnchors(sources: SourceFeature[]) {
-  const clusterRadiusMeters = terrainClusterRadiusForSourceCount(sources.length);
+function buildTerrainObstacleAnchors(terrains: TerrainFeature[]) {
   const anchors: Array<{
     lat: number;
     lng: number;
-    sourceIds: string[];
-    maxDistanceMeters: number;
+    terrainIds: string[];
+    probeRadiusMeters: number;
   }> = [];
-  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const terrainById = new Map(terrains.map((terrain) => [terrain.id, terrain]));
 
-  for (const source of sources) {
-    const sourcePoint = point([source.longitude, source.latitude]);
+  for (const terrain of terrains) {
+    const terrainPoint = point([terrain.center.lng, terrain.center.lat]);
     let matchedAnchor:
       | {
           lat: number;
           lng: number;
-          sourceIds: string[];
-          maxDistanceMeters: number;
+          terrainIds: string[];
+          probeRadiusMeters: number;
         }
       | undefined;
     let matchedDistance = Number.POSITIVE_INFINITY;
 
     for (const anchor of anchors) {
       const anchorPoint = point([anchor.lng, anchor.lat]);
-      const anchorDistance = distance(sourcePoint, anchorPoint, {
+      const anchorDistance = distance(terrainPoint, anchorPoint, {
         units: "meters",
       });
 
       if (
-        anchorDistance <= clusterRadiusMeters &&
+        anchorDistance <= TERRAIN_OBSTACLE_CLUSTER_RADIUS_METERS &&
         anchorDistance < matchedDistance
       ) {
         matchedAnchor = anchor;
@@ -748,66 +701,72 @@ function buildTerrainSearchAnchors(sources: SourceFeature[]) {
 
     if (!matchedAnchor) {
       anchors.push({
-        lat: source.latitude,
-        lng: source.longitude,
-        sourceIds: [source.id],
-        maxDistanceMeters: 0,
+        lat: terrain.center.lat,
+        lng: terrain.center.lng,
+        terrainIds: [terrain.id],
+        probeRadiusMeters: terrainProbeRadius(terrain),
       });
       continue;
     }
 
-    matchedAnchor.sourceIds.push(source.id);
+    matchedAnchor.terrainIds.push(terrain.id);
     matchedAnchor.lat =
-      (matchedAnchor.lat * (matchedAnchor.sourceIds.length - 1) + source.latitude) /
-      matchedAnchor.sourceIds.length;
+      (matchedAnchor.lat * (matchedAnchor.terrainIds.length - 1) +
+        terrain.center.lat) /
+      matchedAnchor.terrainIds.length;
     matchedAnchor.lng =
-      (matchedAnchor.lng * (matchedAnchor.sourceIds.length - 1) + source.longitude) /
-      matchedAnchor.sourceIds.length;
+      (matchedAnchor.lng * (matchedAnchor.terrainIds.length - 1) +
+        terrain.center.lng) /
+      matchedAnchor.terrainIds.length;
 
-    let nextMaxDistance = 0;
     const nextAnchorPoint = point([matchedAnchor.lng, matchedAnchor.lat]);
+    let nextProbeRadius = 0;
 
-    for (const sourceId of matchedAnchor.sourceIds) {
-      const member = sourceById.get(sourceId);
+    for (const terrainId of matchedAnchor.terrainIds) {
+      const member = terrainById.get(terrainId);
 
       if (!member) {
         continue;
       }
 
-      const memberPoint = point([member.longitude, member.latitude]);
-      nextMaxDistance = Math.max(
-        nextMaxDistance,
-        distance(memberPoint, nextAnchorPoint, { units: "meters" }),
+      const memberPoint = point([member.center.lng, member.center.lat]);
+      nextProbeRadius = Math.max(
+        nextProbeRadius,
+        distance(memberPoint, nextAnchorPoint, { units: "meters" }) +
+          terrainProbeRadius(member),
       );
     }
 
-    matchedAnchor.maxDistanceMeters = nextMaxDistance;
+    matchedAnchor.probeRadiusMeters = Math.min(
+      SEARCH_RADIUS_METERS * 2,
+      Math.ceil(nextProbeRadius),
+    );
   }
 
   return anchors.map((anchor, index) => ({
-    id: `anchor-${index + 1}`,
+    id: `obstacle-anchor-${index + 1}`,
     lat: anchor.lat,
     lng: anchor.lng,
-    probeRadiusMeters: Math.min(
-      SEARCH_RADIUS_METERS * 2,
-      Math.ceil(SEARCH_RADIUS_METERS + anchor.maxDistanceMeters),
+    probeRadiusMeters: Math.max(
+      TERRAIN_OBSTACLE_MIN_RADIUS_METERS,
+      anchor.probeRadiusMeters,
     ),
-    sourceIds: anchor.sourceIds,
-  })) satisfies TerrainSearchAnchor[];
+    terrainIds: anchor.terrainIds,
+  })) satisfies TerrainObstacleAnchor[];
 }
 
-function buildAroundStatementsForTerrains(
+function buildAroundStatementsForTerrainAnchors(
   selectors: ReadonlyArray<{ key: string; value?: string }>,
-  terrains: TerrainFeature[],
+  anchors: TerrainObstacleAnchor[],
 ) {
-  return terrains
-    .flatMap((terrain) =>
+  return anchors
+    .flatMap((anchor) =>
       selectors.map((selector) => {
         const filter = selector.value
           ? `["${selector.key}"="${selector.value}"]`
           : `["${selector.key}"]`;
 
-        return `way${filter}(around:${terrainProbeRadius(terrain)},${terrain.center.lat},${terrain.center.lng});`;
+        return `way${filter}(around:${anchor.probeRadiusMeters},${anchor.lat},${anchor.lng});`;
       }),
     )
     .join("\n");
@@ -887,7 +846,8 @@ async function fetchTerrainObstaclesForProvince(
     };
   }
 
-  const terrainChunks = chunkArray(terrains, TERRAINS_PER_OBSTACLE_CHUNK);
+  const obstacleAnchors = buildTerrainObstacleAnchors(terrains);
+  const anchorChunks = chunkArray(obstacleAnchors, OBSTACLE_ANCHORS_PER_CHUNK);
   const province = PROVINCE_MAP[provinceId];
   const buildingMap = new Map<string, PreparedPolygonObstacle>();
   const urbanAreaMap = new Map<string, PreparedPolygonObstacle>();
@@ -896,20 +856,24 @@ async function fetchTerrainObstaclesForProvince(
 
   reportProgress(
     reporter,
-    `${province.name}: verifica edifici, urbanizzato e strade su ${terrainChunks.length} blocchi di terreni.`,
+    `${province.name}: verifica edifici, urbanizzato e strade su ${anchorChunks.length} blocchi di contesto.`,
   );
 
-  for (const [index, terrainChunk] of terrainChunks.entries()) {
+  for (const [index, anchorChunk] of anchorChunks.entries()) {
+    const chunkTerrainCount = anchorChunk.reduce(
+      (sum, anchor) => sum + anchor.terrainIds.length,
+      0,
+    );
     reportProgress(
       reporter,
-      `${province.name}: blocco filtri ${index + 1}/${terrainChunks.length} su ${terrainChunk.length} terreni.`,
+      `${province.name}: blocco filtri ${index + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkTerrainCount} terreni.`,
     );
     const query = `
 [out:json][timeout:45];
 (
-${buildAroundStatementsForTerrains([{ key: "building" }], terrainChunk)}
-${buildAroundStatementsForTerrains(URBAN_AREA_SELECTORS, terrainChunk)}
-${buildAroundStatementsForTerrains(ROAD_SELECTORS, terrainChunk)}
+${buildAroundStatementsForTerrainAnchors([{ key: "building" }], anchorChunk)}
+${buildAroundStatementsForTerrainAnchors(URBAN_AREA_SELECTORS, anchorChunk)}
+${buildAroundStatementsForTerrainAnchors(ROAD_SELECTORS, anchorChunk)}
 );
 out geom;
 `;
@@ -918,7 +882,7 @@ out geom;
       const data = await fetchOverpass(
         query,
         reporter,
-        `${province.name} filtri blocco ${index + 1}/${terrainChunks.length}`,
+        `${province.name} filtri blocco ${index + 1}/${anchorChunks.length}`,
       );
 
       for (const element of data.elements) {
@@ -956,7 +920,7 @@ out geom;
       }
     } catch (error) {
       if (error instanceof OverpassRateLimitError) {
-        warning = `${province.name}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${index + 1}/${terrainChunks.length}.`;
+        warning = `${province.name}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${index + 1}/${anchorChunks.length}.`;
         reportProgress(reporter, warning);
         break;
       }
@@ -1089,91 +1053,6 @@ function filterTerrainsByObstacles(
   };
 }
 
-async function fetchAgriculturalWaysNearSources(
-  provinceId: ProvinceId,
-  provinceSources: SourceFeature[],
-  reporter?: ProgressReporter,
-) {
-  if (provinceSources.length === 0) {
-    return {
-      ways: [] as OverpassElement[],
-      warning: null as string | null,
-    };
-  }
-
-  const terrainAnchors = buildTerrainSearchAnchors(provinceSources);
-  const anchorChunks = chunkArray(
-    terrainAnchors,
-    agriAnchorChunkSize(provinceSources.length),
-  );
-  const allElements: OverpassElement[] = [];
-  const province = PROVINCE_MAP[provinceId];
-  let warning: string | null = null;
-
-  reportProgress(
-    reporter,
-    `${province.name}: fonti aggregate in ${terrainAnchors.length} ancore di ricerca.`,
-  );
-
-  reportProgress(
-    reporter,
-    `${province.name}: avvio ricerca poligoni agricoli vicini alle fonti in ${anchorChunks.length} blocchi.`,
-  );
-
-  for (const [index, anchorChunk] of anchorChunks.entries()) {
-    const chunkSourceCount = anchorChunk.reduce(
-      (sum, anchor) => sum + anchor.sourceIds.length,
-      0,
-    );
-    reportProgress(
-      reporter,
-      `${province.name}: blocco terreni ${index + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkSourceCount} fonti.`,
-    );
-    const query = `
-[out:json][timeout:45];
-(
-${buildAroundStatements(AGRICULTURAL_SELECTORS, anchorChunk)}
-);
-out geom;
-`;
-
-    try {
-      const data = await fetchOverpass(
-        query,
-        reporter,
-        `${province.name} terreni blocco ${index + 1}/${anchorChunks.length}`,
-      );
-      allElements.push(...data.elements);
-    } catch (error) {
-      if (error instanceof OverpassRateLimitError) {
-        warning = `${province.name}: scansione terreni completata parzialmente per rate limit Overpass al blocco ${index + 1}/${anchorChunks.length}.`;
-        reportProgress(reporter, warning);
-        break;
-      }
-
-      throw error;
-    }
-  }
-
-  const unique = new Map<string, OverpassElement>();
-
-  for (const element of allElements) {
-    unique.set(`${element.type}-${element.id}`, element);
-  }
-
-  const ways = Array.from(unique.values()).filter((element) => element.type === "way");
-
-  reportProgress(
-    reporter,
-    `${province.name}: poligoni agricoli candidati ${ways.length}.`,
-  );
-
-  return {
-    ways,
-    warning,
-  };
-}
-
 function mergeSources(sources: SourceFeature[]) {
   const byId = new Map<string, SourceFeature>();
 
@@ -1203,109 +1082,6 @@ function provinceName(provinceId: ProvinceId) {
   return PROVINCE_MAP[provinceId].name;
 }
 
-function sourceCandidatePrefilter(
-  source: SourceFeature,
-  minLat: number,
-  minLng: number,
-  maxLat: number,
-  maxLng: number,
-) {
-  const latBuffer = 0.006;
-  const lngBuffer = 0.006;
-
-  return (
-    source.latitude >= minLat - latBuffer &&
-    source.latitude <= maxLat + latBuffer &&
-    source.longitude >= minLng - lngBuffer &&
-    source.longitude <= maxLng + lngBuffer
-  );
-}
-
-function computeTerrainCandidate(
-  provinceId: ProvinceId,
-  element: OverpassElement,
-  provinceSources: SourceFeature[],
-): TerrainFeature | null {
-  const ring = ringFromGeometry(element.geometry);
-
-  if (!ring) {
-    return null;
-  }
-
-  try {
-    const poly = polygon([ring]);
-    const centroid = centerOfMass(poly).geometry.coordinates;
-    const tags = element.tags ?? {};
-
-    if (isTerrainHardExcluded(tags)) {
-      return null;
-    }
-
-    const landuse = tags.landuse ?? "agricultural";
-    const lats = ring.map((coordinate) => coordinate[1]);
-    const lngs = ring.map((coordinate) => coordinate[0]);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLng = Math.min(...lngs);
-    const maxLng = Math.max(...lngs);
-
-    let closestSource: SourceFeature | null = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-    let sourceCountInRange = 0;
-
-    for (const source of provinceSources) {
-      if (!sourceCandidatePrefilter(source, minLat, minLng, maxLat, maxLng)) {
-        continue;
-      }
-
-      const sourcePoint = point([source.longitude, source.latitude]);
-      const distanceMeters = pointToPolygonDistance(sourcePoint, poly, {
-        units: "meters",
-      });
-
-      if (Number.isNaN(distanceMeters)) {
-        continue;
-      }
-
-      if (distanceMeters <= SEARCH_RADIUS_METERS) {
-        sourceCountInRange += 1;
-      }
-
-      if (distanceMeters < closestDistance) {
-        closestDistance = distanceMeters;
-        closestSource = source;
-      }
-    }
-
-    if (!closestSource || closestDistance > SEARCH_RADIUS_METERS) {
-      return null;
-    }
-
-    return {
-      id: `${provinceId}-terrain-${element.id}`,
-      osmId: element.id,
-      osmType: "way",
-      provinceId,
-      name: tags.name || `${landuseLabel(landuse)} ${element.id}`,
-      landuse,
-      center: {
-        lat: centroid[1],
-        lng: centroid[0],
-      },
-      coordinates: ring,
-      distanceMeters: closestDistance,
-      areaSqm: Math.round(area(poly)),
-      closestSourceId: closestSource.id,
-      closestSourceName: closestSource.name,
-      closestSourceCategoryId: closestSource.primaryCategoryId,
-      sourceCountInRange,
-      tags,
-    } satisfies TerrainFeature;
-  } catch {
-    return null;
-  }
-}
-
 async function scanProvince(
   provinceId: ProvinceId,
   categoryIds: SourceCategoryId[],
@@ -1321,24 +1097,17 @@ async function scanProvince(
   const terrainLookup =
     sources.length === 0
       ? {
-          ways: [] as OverpassElement[],
+          terrains: [] as TerrainFeature[],
           warning: null as string | null,
         }
-      : await fetchAgriculturalWaysNearSources(provinceId, sources, reporter);
-
-  reportProgress(
-    reporter,
-    `${province.name}: calcolo prossimità terreno-fonte su ${terrainLookup.ways.length} poligoni.`,
+      : await fetchCadastralTerrainsNearSources(provinceId, sources, reporter);
+  const terrainCandidates = terrainLookup.terrains.sort(
+    (left, right) => left.distanceMeters - right.distanceMeters,
   );
 
-  const terrainCandidates = terrainLookup.ways
-    .map((element) => computeTerrainCandidate(provinceId, element, sources))
-    .filter((terrain): terrain is TerrainFeature => terrain !== null)
-    .sort((left, right) => left.distanceMeters - right.distanceMeters);
-
   reportProgress(
     reporter,
-    `${province.name}: terreni preliminari prima del filtro urbano ${terrainCandidates.length}.`,
+    `${province.name}: particelle preliminari prima del filtro urbano ${terrainCandidates.length}.`,
   );
 
   const obstacleLookup = await fetchTerrainObstaclesForProvince(
@@ -1356,7 +1125,7 @@ async function scanProvince(
 
   reportProgress(
     reporter,
-    `${province.name}: terreni agricoli nel raggio trovati ${terrains.length}.`,
+    `${province.name}: particelle compatibili nel raggio trovate ${terrains.length}.`,
   );
 
   return {
@@ -1394,7 +1163,7 @@ export async function runScan(
   if (cachedScanResult && cachedScanResult.expiresAt > Date.now()) {
     reportProgress(
       reporter,
-      "Uso un risultato recente già disponibile per evitare nuova pressione su Overpass.",
+      "Uso un risultato recente già disponibile per evitare nuova pressione sui provider geospaziali live.",
     );
     return cloneScanResponse(cachedScanResult.value);
   }
@@ -1445,13 +1214,13 @@ export async function runScan(
 
       if (sources.length > 0 && terrains.length === 0) {
         warnings.push(
-          "Le fonti sono state trovate, ma non sono emersi poligoni agricoli OSM entro 350 m nel set corrente.",
+          "Le fonti sono state trovate, ma non sono emerse particelle catastali compatibili entro 350 m nel set corrente.",
         );
       }
 
-      if (overpassCache.size > 0) {
+      if (overpassCache.size > 0 && (categories.some((category) => category !== "fuel") || terrains.length > 0)) {
         warnings.push(
-          "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre i rate limit di Overpass.",
+          "Le scansioni uguali vengono temporaneamente riutilizzate da cache per ridurre la pressione sui provider geospaziali live.",
         );
       }
 

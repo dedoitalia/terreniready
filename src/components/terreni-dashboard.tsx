@@ -112,19 +112,27 @@ function createLogEntry(message: string): ScanJobLogEntry {
   };
 }
 
+function terrainMapUrl(terrain: TerrainFeature) {
+  return (
+    terrain.referenceUrl ??
+    `https://www.google.com/maps?q=${terrain.center.lat.toFixed(6)},${terrain.center.lng.toFixed(6)}`
+  );
+}
+
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
       "provincia",
       "terreno",
-      "uso_agricolo",
+      "classe_terreno",
       "distanza_metri",
       "superficie_mq",
       "fonte",
       "tipo_fonte",
       "lat",
       "lng",
-      "osm_url",
+      "provider_terreno",
+      "link_mappa",
     ],
     ...data.terrains.map((terrain) => [
       PROVINCE_MAP[terrain.provinceId].name,
@@ -136,7 +144,8 @@ function buildCsv(data: ScanResponse) {
       SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId].label,
       terrain.center.lat.toFixed(6),
       terrain.center.lng.toFixed(6),
-      `https://www.openstreetmap.org/way/${terrain.osmId}`,
+      terrain.providerLabel,
+      terrainMapUrl(terrain),
     ]),
   ];
 
@@ -178,25 +187,25 @@ function loadingContextCopy(
 ) {
   if (isLongRunningScan) {
     if (categoryIds.length === 1 && categoryIds[0] === "fuel") {
-      return "I distributori sono gia acquisiti dal dataset ufficiale MIMIT; il motore sta ancora completando terreni agricoli e filtri urbani sui provider geospaziali pubblici.";
+      return "I distributori sono gia acquisiti dal dataset ufficiale MIMIT; il motore sta completando particelle catastali e filtro anti-urbano nel buffer selezionato.";
     }
 
-    return "Il job è ancora vivo sul server. Continuo a leggere i log e a completare i passaggi residui su fonti e terreni, senza interrompere la scansione.";
+    return "Il job è ancora vivo sul server. Continuo a leggere i log e a completare i passaggi residui su fonti, particelle catastali e filtro anti-urbano.";
   }
 
   if (categoryIds.length === 1 && categoryIds[0] === "fuel") {
-    return "I distributori arrivano dal dataset ufficiale MIMIT; in questa fase sto verificando terreni agricoli e filtri urbani nel buffer selezionato.";
+    return "I distributori arrivano dal dataset ufficiale MIMIT; in questa fase sto verificando particelle catastali e filtro anti-urbano nel buffer selezionato.";
   }
 
   if (categoryIds.includes("fuel")) {
-    return "Le fonti carburante arrivano da MIMIT, mentre le altre categorie e i terreni passano ancora dai provider geospaziali pubblici.";
+    return "Le fonti carburante arrivano da MIMIT, mentre le altre categorie e il filtro anti-urbano passano ancora dai provider geospaziali pubblici.";
   }
 
   if (selectedProvinceCount > 1 || categoryIds.length > 1) {
     return "Con più province o categorie la pipeline può richiedere più tempo.";
   }
 
-  return "Sto cercando fonti e terreni agricoli nel buffer selezionato.";
+  return "Sto cercando fonti e particelle catastali nel buffer selezionato.";
 }
 
 function terrainPlacemark(terrain: TerrainFeature) {
@@ -209,12 +218,13 @@ function terrainPlacemark(terrain: TerrainFeature) {
       <name>${terrain.name}</name>
       <description><![CDATA[
         Provincia: ${PROVINCE_MAP[terrain.provinceId].name}<br/>
-        Uso: ${landuseLabel(terrain.landuse)}<br/>
+        Classe: ${landuseLabel(terrain.landuse)}<br/>
         Distanza: ${Math.round(terrain.distanceMeters)} m<br/>
         Superficie: ${
           terrain.areaSqm ? terrain.areaSqm.toLocaleString("it-IT") : "n.d."
         } m²<br/>
-        Fonte: ${terrain.closestSourceName}
+        Fonte: ${terrain.closestSourceName}<br/>
+        Provider: ${terrain.providerLabel}
       ]]></description>
       <Style>
         <LineStyle><color>ff2f5d22</color><width>2</width></LineStyle>
@@ -585,14 +595,14 @@ export default function TerreniDashboard() {
                   <div className="mt-4 space-y-3 text-sm leading-6 text-[#e5eee0]">
                     <p>1. Selezione geografica delle province target.</p>
                     <p>2. Ingest di fonti da dataset ufficiali e provider geospaziali.</p>
-                    <p>3. Matching spaziale dei terreni agricoli nel buffer.</p>
+                    <p>3. Matching spaziale di particelle catastali e filtri anti-urbani.</p>
                     <p>4. Lettura in mappa, tabella ed export del dossier.</p>
                   </div>
                 </div>
               </div>
               <div className="flex flex-wrap gap-3">
                 <span className="terrain-chip terrain-chip-dark">
-                  MIMIT + provider geospaziali
+                  MIMIT + catasto ufficiale
                 </span>
                 <span className="terrain-chip terrain-chip-dark">
                   Overlay catastale WMS ufficiale
@@ -799,7 +809,7 @@ export default function TerreniDashboard() {
               </h2>
               <p className="mt-3 text-sm leading-6 text-[#cfdbcb]">
                 La scansione interroga le fonti pubbliche, costruisce il buffer
-                spaziale e rientra con il set dei terreni agricoli rilevati.
+                spaziale e rientra con il set delle particelle catastali rilevate.
               </p>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
@@ -947,7 +957,7 @@ export default function TerreniDashboard() {
                   {scanData?.meta.totalTerrains ?? 0}
                 </div>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  Poligoni agricoli agganciati alla fonte più vicina.
+                  Particelle catastali agganciate alla fonte più vicina.
                 </p>
               </div>
               <div className="terrain-stat-card">
@@ -1116,7 +1126,7 @@ export default function TerreniDashboard() {
                   Ledger dei terreni ordinati per vicinanza
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
-                  Ogni riga è un poligono agricolo OSM con la sua fonte emissiva più
+                  Ogni riga è una particella catastale con la sua fonte emissiva più
                   vicina. La selezione aggiorna la mappa e la scheda dossier.
                 </p>
               </div>
@@ -1293,13 +1303,16 @@ export default function TerreniDashboard() {
                     {activeTerrain.center.lat.toFixed(6)},{" "}
                     {activeTerrain.center.lng.toFixed(6)}
                   </div>
+                  <div className="mt-3 text-xs leading-5 text-[#b7c7b4]">
+                    Provider: {activeTerrain.providerLabel}
+                  </div>
                   <a
-                    href={`https://www.openstreetmap.org/way/${activeTerrain.osmId}`}
+                    href={terrainMapUrl(activeTerrain)}
                     target="_blank"
                     rel="noreferrer"
                     className="mt-4 inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
                   >
-                    Apri poligono sorgente
+                    Apri il terreno in mappa
                   </a>
                 </div>
 

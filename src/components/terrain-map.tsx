@@ -175,6 +175,7 @@ export default function TerrainMap({
                     <p>{terrain.areaSqm.toLocaleString("it-IT")} m² stimati</p>
                   ) : null}
                   <p>Fonte: {terrain.closestSourceName}</p>
+                  <p className="text-[var(--muted)]">{terrain.providerLabel}</p>
                 </div>
               </Popup>
             </Polygon>
@@ -224,8 +225,8 @@ export default function TerrainMap({
 
       <div className="pointer-events-none absolute bottom-4 left-4 max-w-xs rounded-[22px] border border-white/10 bg-[rgba(17,27,19,0.82)] px-4 py-3 text-xs leading-5 text-[#edf3e8] shadow-lg backdrop-blur">
         Dati mappa: immagini satellitari Esri, particelle catastali WMS Agenzia
-        delle Entrate, fonti da MIMIT e OpenStreetMap, aree agricole da
-        OpenStreetMap.
+        delle Entrate, fonti da MIMIT e OpenStreetMap, particelle da WFS
+        ufficiale con filtro anti-urbano geospaziale.
       </div>
     </div>
   );

@@ -67,6 +67,8 @@ export const AGRICULTURAL_SELECTORS: TagSelector[] = [
 
 export function landuseLabel(landuse: string) {
   switch (landuse) {
+    case "cadastral_parcel":
+      return "Particella";
     case "farmland":
       return "Seminativo";
     case "orchard":

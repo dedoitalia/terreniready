@@ -18,7 +18,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "TerreniReady",
   description:
-    "SaaS territoriale per la ricerca di terreni agricoli prossimi a fonti emissive.",
+    "SaaS territoriale per la ricerca di particelle e terreni prossimi a fonti emissive.",
 };
 
 export default function RootLayout({

@@ -29,6 +29,7 @@ export type BoundingBox = {
 };
 
 export type SourceDataProviderId = "osm" | "mimit" | "ispra";
+export type TerrainDataProviderId = "osm" | "cadastre";
 
 export type SourceFeature = {
   id: string;
@@ -49,7 +50,7 @@ export type SourceFeature = {
 
 export type TerrainFeature = {
   id: string;
-  osmId: number;
+  osmId: number | null;
   osmType: "way";
   provinceId: ProvinceId;
   name: string;
@@ -62,6 +63,9 @@ export type TerrainFeature = {
   closestSourceName: string;
   closestSourceCategoryId: SourceCategoryId;
   sourceCountInRange: number;
+  dataProvider: TerrainDataProviderId;
+  providerLabel: string;
+  referenceUrl: string | null;
   tags: Record<string, string>;
 };
 
