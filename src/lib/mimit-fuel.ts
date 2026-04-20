@@ -47,6 +47,22 @@ function parseNumber(value: string | undefined) {
   return Number(value.trim().replace(",", "."));
 }
 
+function isInsideProvinceBounds(
+  provinceId: ProvinceId,
+  latitude: number,
+  longitude: number,
+) {
+  const bbox = PROVINCE_MAP[provinceId].bbox;
+  const margin = 0.08;
+
+  return (
+    latitude >= bbox.south - margin &&
+    latitude <= bbox.north + margin &&
+    longitude >= bbox.west - margin &&
+    longitude <= bbox.east + margin
+  );
+}
+
 function parseDataset(text: string) {
   const lines = text
     .replace(/\r\n/g, "\n")
@@ -94,7 +110,12 @@ function parseDataset(text: string) {
     const latitude = parseNumber(cells[headerIndex.latitudine]);
     const longitude = parseNumber(cells[headerIndex.longitudine]);
 
-    if (!idImpianto || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    if (
+      !idImpianto ||
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      !isInsideProvinceBounds(provinceCode, latitude, longitude)
+    ) {
       continue;
     }
 
