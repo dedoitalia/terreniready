@@ -61,6 +61,38 @@ function FitToContent({
   return null;
 }
 
+function FocusActiveTerrain({
+  activeTerrain,
+}: {
+  activeTerrain: TerrainFeature | undefined;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!activeTerrain) {
+      return;
+    }
+
+    const polygonBounds = activeTerrain.coordinates.map(
+      ([lng, lat]) => [lat, lng] as [number, number],
+    );
+
+    if (polygonBounds.length >= 3) {
+      map.fitBounds(polygonBounds, {
+        padding: [72, 72],
+        maxZoom: 18,
+      });
+      return;
+    }
+
+    map.setView([activeTerrain.center.lat, activeTerrain.center.lng], 18, {
+      animate: true,
+    });
+  }, [activeTerrain, map]);
+
+  return null;
+}
+
 export default function TerrainMap({
   selectedProvinceIds,
   sources,
@@ -110,6 +142,7 @@ export default function TerrainMap({
           sources={sources}
           terrains={terrains}
         />
+        <FocusActiveTerrain activeTerrain={activeTerrain} />
 
         {sources.map((source) => {
           const category = SOURCE_CATEGORY_MAP[source.primaryCategoryId];

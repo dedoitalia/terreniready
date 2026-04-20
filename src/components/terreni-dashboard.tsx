@@ -363,6 +363,7 @@ export default function TerreniDashboard() {
   const streamReconnectNoticeRef = useRef(false);
   const terrainRowRefs = useRef(new Map<string, HTMLTableRowElement>());
   const dossierRef = useRef<HTMLElement | null>(null);
+  const atlasRef = useRef<HTMLElement | null>(null);
 
   const activeTerrain = scanData?.terrains.find(
     (terrain) => terrain.id === activeTerrainId,
@@ -479,6 +480,13 @@ export default function TerreniDashboard() {
     }
 
     streamReconnectNoticeRef.current = false;
+  }
+
+  function focusActiveTerrainOnAtlas() {
+    atlasRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
   }
 
   async function runScan() {
@@ -1117,7 +1125,7 @@ export default function TerreniDashboard() {
               </div>
             ))}
 
-            <section className="terrain-shell p-3 sm:p-4">
+            <section ref={atlasRef} className="terrain-shell p-3 sm:p-4">
               <div className="rounded-[28px] border border-[rgba(24,39,27,0.1)] bg-[rgba(255,255,255,0.44)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] sm:p-5">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                   <div className="max-w-2xl">
@@ -1464,14 +1472,13 @@ export default function TerreniDashboard() {
                     Provider: {activeTerrain.providerLabel}
                   </div>
                   <div className="mt-4 flex flex-wrap gap-3">
-                    <a
-                      href={terrainMapUrl(activeTerrain)}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={focusActiveTerrainOnAtlas}
                       className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
                     >
-                      Apri il terreno in mappa
-                    </a>
+                      Vedi poligono nella mappa
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -1491,6 +1498,14 @@ export default function TerreniDashboard() {
                       Scarica poligono KMZ
                     </button>
                   </div>
+                  <a
+                    href={terrainMapUrl(activeTerrain)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-flex text-xs font-medium uppercase tracking-[0.14em] text-[#cddc88] underline underline-offset-4"
+                  >
+                    Apri centroide in Google Maps
+                  </a>
                 </div>
 
                 <div className="rounded-[26px] border border-white/8 bg-[#111b14] p-5">
