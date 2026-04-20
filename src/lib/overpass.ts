@@ -204,6 +204,21 @@ function endpointRole(index: number) {
   return index === 0 ? "primario" : `fallback ${index}`;
 }
 
+function activeOverpassCooldownCount() {
+  const now = Date.now();
+  let activeCount = 0;
+
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    const cooldownUntil = endpointCooldowns.get(endpoint) ?? 0;
+
+    if (cooldownUntil > now) {
+      activeCount += 1;
+    }
+  }
+
+  return activeCount;
+}
+
 function cloneScanResponse(result: ScanResponse) {
   return structuredClone(result);
 }
@@ -646,6 +661,19 @@ out center;
       } satisfies SourceFeature;
     })
     .filter((source) => source !== null) as SourceFeature[];
+
+  if (
+    sources.length === 0 &&
+    activeOverpassCooldownCount() >= OVERPASS_ENDPOINTS.length - 1
+  ) {
+    reportProgress(
+      reporter,
+      `${province.name}: risposta fonti vuota con quasi tutti gli endpoint OSM in cooldown, considero la copertura temporaneamente inaffidabile.`,
+    );
+    throw new OverpassRateLimitError(
+      "Copertura fonti OSM temporaneamente inaffidabile: riprovo appena i provider escono dal cooldown.",
+    );
+  }
 
   reportProgress(
     reporter,
