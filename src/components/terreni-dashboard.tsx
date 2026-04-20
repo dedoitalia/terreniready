@@ -132,6 +132,14 @@ function safeCdata(value: string) {
   return value.replaceAll("]]>", "]]]]><![CDATA[>");
 }
 
+function safeFilenameSegment(value: string) {
+  return value
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
 function buildCsv(data: ScanResponse) {
   const rows = [
     [
@@ -262,8 +270,8 @@ function terrainPlacemark(terrain: TerrainFeature) {
     </Placemark>`;
 }
 
-async function downloadKmz(data: ScanResponse) {
-  const placemarks = data.terrains
+async function downloadTerrainKmz(terrains: TerrainFeature[], filename: string) {
+  const placemarks = terrains
     .map(terrainPlacemark)
     .filter((placemark): placemark is string => placemark !== null);
 
@@ -283,7 +291,11 @@ async function downloadKmz(data: ScanResponse) {
   zip.file("doc.kml", kml);
 
   const blob = await zip.generateAsync({ type: "blob" });
-  downloadBlob(blob, "application/vnd.google-earth.kmz", "terreniready-export.kmz");
+  downloadBlob(blob, "application/vnd.google-earth.kmz", filename);
+}
+
+async function downloadKmz(data: ScanResponse) {
+  await downloadTerrainKmz(data.terrains, "terreniready-export.kmz");
 }
 
 export default function TerreniDashboard() {
@@ -1357,14 +1369,34 @@ export default function TerreniDashboard() {
                   <div className="mt-3 text-xs leading-5 text-[#b7c7b4]">
                     Provider: {activeTerrain.providerLabel}
                   </div>
-                  <a
-                    href={terrainMapUrl(activeTerrain)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-4 inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
-                  >
-                    Apri il terreno in mappa
-                  </a>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <a
+                      href={terrainMapUrl(activeTerrain)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
+                    >
+                      Apri il terreno in mappa
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void downloadTerrainKmz(
+                          [activeTerrain],
+                          `terreno-${safeFilenameSegment(activeTerrain.name || activeTerrain.id)}.kmz`,
+                        ).catch((downloadError) => {
+                          setError(
+                            downloadError instanceof Error
+                              ? downloadError.message
+                              : "Export del poligono KMZ non riuscito. Riprova tra pochi secondi.",
+                          );
+                        });
+                      }}
+                      className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.08)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.14)]"
+                    >
+                      Scarica poligono KMZ
+                    </button>
+                  </div>
                 </div>
 
                 <div className="rounded-[26px] border border-white/8 bg-[#111b14] p-5">
