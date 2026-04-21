@@ -32,6 +32,15 @@ const TECHNICAL_PARCEL_ASPECT_RATIO = 8;
 const TECHNICAL_PARCEL_MIN_FILL_RATIO = 0.16;
 const TECHNICAL_PARCEL_MIN_COMPACTNESS = 0.06;
 
+// Un solo parser XML riutilizzato su tutte le pagine WFS: istanziarlo per
+// ogni pagina e` uno spreco perche la config e` invariata.
+const CADASTRAL_XML_PARSER = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  parseTagValue: false,
+  trimValues: true,
+});
+
 type ProgressReporter = (event: ScanProgressEvent) => void;
 
 type TerrainSearchAnchor = {
@@ -420,13 +429,7 @@ function normalizeMembers(members: unknown) {
 }
 
 function parseCadastralResponse(xml: string) {
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: "@_",
-    parseTagValue: false,
-    trimValues: true,
-  });
-  const parsed = parser.parse(xml);
+  const parsed = CADASTRAL_XML_PARSER.parse(xml);
   const collection = parsed["wfs:FeatureCollection"] as
     | Record<string, unknown>
     | undefined;
