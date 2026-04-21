@@ -1,8 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import JSZip from "jszip";
-import { useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { PROVINCES, PROVINCE_MAP } from "@/lib/province-data";
 import {
@@ -29,6 +35,7 @@ const TerrainMap = dynamic(() => import("@/components/terrain-map"), {
 });
 
 const LONG_SCAN_THRESHOLD_SECONDS = 180;
+const MAX_LOG_ENTRIES = 120;
 
 type LiveScanState = {
   status: "running" | "completed" | "failed";
@@ -105,10 +112,18 @@ function appendLogEntry(
   previous: LiveScanState | null,
   entry: ScanJobLogEntry,
 ): LiveScanState {
+  const nextLogs = previous?.logs ?? [];
+  // Piu efficiente di [...prev, entry].slice(-120): evita la copia del
+  // vettore completo quando siamo gia al cap di 120 elementi.
+  const capped =
+    nextLogs.length >= MAX_LOG_ENTRIES
+      ? nextLogs.slice(nextLogs.length - MAX_LOG_ENTRIES + 1)
+      : nextLogs;
+
   return {
     status: previous?.status ?? "running",
     error: previous?.error ?? null,
-    logs: [...(previous?.logs ?? []), entry].slice(-120),
+    logs: [...capped, entry],
   };
 }
 
@@ -209,14 +224,15 @@ function buildCsv(data: ScanResponse) {
 
   return rows
     .map((row) =>
-      row
-        .map((cell) => `"${cell.replaceAll('"', '""')}"`)
-        .join(","),
+      row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(","),
     )
     .join("\n");
 }
 
-function latestRunHeadline(data: ScanResponse | null, latestLog?: ScanJobLogEntry) {
+function latestRunHeadline(
+  data: ScanResponse | null,
+  latestLog?: ScanJobLogEntry,
+) {
   if (!data) {
     return latestLog?.message ?? "Nessun evento registrato";
   }
@@ -324,6 +340,10 @@ async function downloadTerrainKmz(terrains: TerrainFeature[], filename: string) 
   </Document>
 </kml>`;
 
+  // JSZip pesa ~95 KB gzip e serve SOLO per il bottone KMZ che molti utenti
+  // non premono. Il dynamic import lo tira giu solo al momento del click
+  // tramite un chunk separato, togliendo peso al bundle iniziale.
+  const { default: JSZip } = await import("jszip");
   const zip = new JSZip();
   zip.file("doc.kml", kml);
 
@@ -339,9 +359,9 @@ export default function TerreniDashboard() {
   const [selectedProvinceIds, setSelectedProvinceIds] = useState<ProvinceId[]>([
     "PT",
   ]);
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<SourceCategoryId[]>(
-    ["fuel", "bodyshop", "repair"],
-  );
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<
+    SourceCategoryId[]
+  >(["fuel", "bodyshop", "repair"]);
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const [scanJob, setScanJob] = useState<LiveScanState | null>(null);
   const [activeTerrainId, setActiveTerrainId] = useState<string>();
@@ -354,25 +374,86 @@ export default function TerreniDashboard() {
   const streamRef = useRef<EventSource | null>(null);
   const streamReconnectTimerRef = useRef<number | null>(null);
   const streamReconnectNoticeRef = useRef(false);
-  const terrainRowRefs = useRef(new Map<string, HTMLTableRowElement>());
-  const dossierRef = useRef<HTMLElement | null>(null);
   const atlasRef = useRef<HTMLElement | null>(null);
+  const dossierRef = useRef<HTMLElement | null>(null);
 
-  const activeTerrain = scanData?.terrains.find(
-    (terrain) => terrain.id === activeTerrainId,
+  // --- Derivati memoizzati ---------------------------------------------
+  // Il ledger dei terreni viene ri-ordinato ad ogni setState (loading,
+  // latest log, sort mode). Senza useMemo paghiamo un O(n log n) + la
+  // rigenerazione della Map fonti ogni render anche quando scanData non
+  // cambia. Blocchiamo queste computazioni dietro le dipendenze reali.
+
+  const sourceById = useMemo(() => {
+    const map = new Map<string, ScanResponse["sources"][number]>();
+    for (const source of scanData?.sources ?? []) {
+      map.set(source.id, source);
+    }
+    return map;
+  }, [scanData?.sources]);
+
+  const activeTerrain = useMemo(
+    () =>
+      activeTerrainId
+        ? scanData?.terrains.find((terrain) => terrain.id === activeTerrainId)
+        : undefined,
+    [scanData?.terrains, activeTerrainId],
   );
 
-  const selectedProvinceNames = selectedProvinceIds.map(
-    (provinceId) => PROVINCE_MAP[provinceId].name,
+  const activeSource = useMemo(
+    () =>
+      activeTerrain ? sourceById.get(activeTerrain.closestSourceId) : undefined,
+    [activeTerrain, sourceById],
   );
+
+  const sortedTerrains = useMemo(() => {
+    const list = scanData?.terrains ?? [];
+
+    if (list.length === 0) {
+      return list;
+    }
+
+    const comparator = (left: TerrainFeature, right: TerrainFeature) => {
+      switch (terrainSortMode) {
+        case "comune-asc":
+          return terrainComuneLabel(left, sourceById).localeCompare(
+            terrainComuneLabel(right, sourceById),
+            "it",
+          );
+        case "comune-desc":
+          return terrainComuneLabel(right, sourceById).localeCompare(
+            terrainComuneLabel(left, sourceById),
+            "it",
+          );
+        case "area-desc":
+          return (right.areaSqm ?? 0) - (left.areaSqm ?? 0);
+        case "area-asc":
+          return (left.areaSqm ?? 0) - (right.areaSqm ?? 0);
+        default:
+          return left.distanceMeters - right.distanceMeters;
+      }
+    };
+
+    return [...list].sort(comparator);
+  }, [scanData?.terrains, terrainSortMode, sourceById]);
+
+  const selectedProvinceNames = useMemo(
+    () => selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].name),
+    [selectedProvinceIds],
+  );
+
+  const selectedCategoryLabels = useMemo(
+    () =>
+      selectedCategoryIds.map(
+        (categoryId) => SOURCE_CATEGORY_MAP[categoryId].label,
+      ),
+    [selectedCategoryIds],
+  );
+
   const selectedProvinceSummary =
     selectedProvinceNames.length > 0
       ? selectedProvinceNames.join(" · ")
       : "Nessuna provincia selezionata";
 
-  const selectedCategoryLabels = selectedCategoryIds.map(
-    (categoryId) => SOURCE_CATEGORY_MAP[categoryId].label,
-  );
   const selectedCategorySummary =
     selectedCategoryLabels.length > 0
       ? selectedCategoryLabels.join(" · ")
@@ -382,34 +463,10 @@ export default function TerreniDashboard() {
   const latestHeadline = latestRunHeadline(scanData, latestLog);
   const warningCount = scanData?.meta.warnings.length ?? 0;
   const noteCount = scanData?.meta.notes?.length ?? 0;
-  const isLongRunningScan = loading && loadingSeconds >= LONG_SCAN_THRESHOLD_SECONDS;
-  const sourceById = new Map(
-    (scanData?.sources ?? []).map((source) => [source.id, source]),
-  );
-  const activeSource = activeTerrain
-    ? sourceById.get(activeTerrain.closestSourceId)
-    : undefined;
-  const sortedTerrains = [...(scanData?.terrains ?? [])].sort((left, right) => {
-    switch (terrainSortMode) {
-      case "comune-asc":
-        return terrainComuneLabel(left, sourceById).localeCompare(
-          terrainComuneLabel(right, sourceById),
-          "it",
-        );
-      case "comune-desc":
-        return terrainComuneLabel(right, sourceById).localeCompare(
-          terrainComuneLabel(left, sourceById),
-          "it",
-        );
-      case "area-desc":
-        return (right.areaSqm ?? 0) - (left.areaSqm ?? 0);
-      case "area-asc":
-        return (left.areaSqm ?? 0) - (right.areaSqm ?? 0);
-      default:
-        return left.distanceMeters - right.distanceMeters;
-    }
-  });
+  const isLongRunningScan =
+    loading && loadingSeconds >= LONG_SCAN_THRESHOLD_SECONDS;
 
+  // --- Effect timer / cleanup ------------------------------------------
   useEffect(() => {
     if (!loading) {
       return;
@@ -455,57 +512,106 @@ export default function TerreniDashboard() {
     };
   }, [isTerrainPreviewOpen]);
 
-  useEffect(() => {
-    if (typeof window === "undefined" || window.innerWidth < 1280 || !activeTerrainId) {
-      return;
-    }
+  // --- Handlers --------------------------------------------------------
+  // useCallback stabilizza le reference passate a TerrainMap (memoized),
+  // ai bottoni export e al select di ordinamento: qualsiasi cambiamento
+  // di stato smette cosi di invalidare i sottocomponenti pesanti.
 
-    const activeRow = terrainRowRefs.current.get(activeTerrainId);
-    const dossier = dossierRef.current;
-
-    if (!activeRow || !dossier) {
-      return;
-    }
-
-    const alignSelectedRow = () => {
-      const rowRect = activeRow.getBoundingClientRect();
-      const dossierRect = dossier.getBoundingClientRect();
-      const delta = rowRect.top - dossierRect.top;
-
-      if (Math.abs(delta) <= 8) {
-        return;
-      }
-
-      window.scrollBy({
-        top: delta,
-        behavior: "smooth",
-      });
-    };
-
-    const frameId = window.requestAnimationFrame(alignSelectedRow);
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [activeTerrainId]);
-
-  function clearStreamReconnectWatchdog() {
+  const clearStreamReconnectWatchdog = useCallback(() => {
     if (streamReconnectTimerRef.current) {
       window.clearTimeout(streamReconnectTimerRef.current);
       streamReconnectTimerRef.current = null;
     }
 
     streamReconnectNoticeRef.current = false;
-  }
+  }, []);
 
-  function focusActiveTerrainOnAtlas() {
+  const focusActiveTerrainOnAtlas = useCallback(() => {
     atlasRef.current?.scrollIntoView({
       behavior: "smooth",
       block: "start",
     });
-  }
+  }, []);
 
-  async function runScan() {
+  // Quando l'utente clicca una riga (o un poligono in mappa) seleziona il
+  // terreno attivo e porta lo scheda dossier in vista: evita il ping-pong
+  // scroll tra tabella (sinistra/basso) e scheda verde (destra/alto).
+  //
+  // Su desktop XL la scheda e` sticky top: 1.5rem quindi scrollIntoView
+  // allinea la riga tabella attiva con la scheda, rendendole leggibili
+  // entrambe nel viewport; sotto XL la scheda non e` sticky e compare
+  // sotto la tabella, quindi scrolliamo direttamente alla scheda con
+  // block:"start". `prefers-reduced-motion` viene rispettato saltando
+  // l'animazione smooth.
+  const selectAndRevealTerrain = useCallback((terrainId: string) => {
+    setActiveTerrainId(terrainId);
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const behavior: ScrollBehavior = prefersReducedMotion ? "auto" : "smooth";
+
+    // Allineamento adattivo: su desktop wide la scheda dossier e` gia
+    // nel layout a due colonne quindi basta portarla in cima; su mobile
+    // la scheda sta sotto e "nearest" non aiuta, quindi forziamo "start".
+    const isWide = window.innerWidth >= 1280;
+    const dossier = dossierRef.current;
+
+    if (!dossier) {
+      return;
+    }
+
+    // requestAnimationFrame: evita che lo scroll parta prima che React
+    // abbia applicato il nuovo stato al DOM (altrimenti la posizione
+    // calcolata fa riferimento al vecchio layout della scheda vuota).
+    window.requestAnimationFrame(() => {
+      dossier.scrollIntoView({
+        behavior,
+        block: isWide ? "start" : "start",
+        inline: "nearest",
+      });
+    });
+  }, []);
+
+  const handleToggleProvince = useCallback((provinceId: ProvinceId) => {
+    setSelectedProvinceIds((current) => toggleItem(current, provinceId));
+  }, []);
+
+  const handleToggleCategory = useCallback((categoryId: SourceCategoryId) => {
+    setSelectedCategoryIds((current) => toggleItem(current, categoryId));
+  }, []);
+
+  const handleExportCsv = useCallback(() => {
+    if (!scanData) {
+      return;
+    }
+
+    downloadBlob(
+      `\ufeff${buildCsv(scanData)}`,
+      "text/csv;charset=utf-8",
+      "terreniready-export.csv",
+    );
+  }, [scanData]);
+
+  const handleExportKmz = useCallback(() => {
+    if (!scanData || scanData.terrains.length === 0) {
+      return;
+    }
+
+    void downloadKmz(scanData).catch((downloadError) => {
+      setError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : "Export KMZ non riuscito. Riprova tra pochi secondi.",
+      );
+    });
+  }, [scanData]);
+
+  const runScan = useCallback(() => {
     if (selectedProvinceIds.length === 0) {
       setError("Seleziona almeno una provincia.");
       return;
@@ -589,6 +695,46 @@ export default function TerreniDashboard() {
       }));
     });
 
+    // Un "partial-result" arriva quando una provincia termina: pushiamo
+    // subito sorgenti e terreni correnti per rendere la mappa reattiva
+    // senza attendere la chiusura dell'intero job.
+    const applyResult = (
+      result: ScanResponse,
+      options: { final: boolean },
+    ) => {
+      setScanData(result);
+      setActiveTerrainId((current) => {
+        if (current && result.terrains.some((terrain) => terrain.id === current)) {
+          return current;
+        }
+        return result.terrains[0]?.id;
+      });
+
+      if (!options.final) {
+        return;
+      }
+
+      setLoading(false);
+      setLoadingSeconds(0);
+      setScanJob((current) => ({
+        status: "completed",
+        error: null,
+        logs: current?.logs ?? [],
+      }));
+    };
+
+    eventSource.addEventListener("partial-result", (event) => {
+      const payload = parseStreamPayload<ScanStreamEvent>(
+        (event as MessageEvent<string>).data,
+      );
+
+      if (!payload || payload.type !== "partial-result") {
+        return;
+      }
+
+      applyResult(payload.result, { final: false });
+    });
+
     eventSource.addEventListener("result", (event) => {
       const payload = parseStreamPayload<ScanStreamEvent>(
         (event as MessageEvent<string>).data,
@@ -598,15 +744,7 @@ export default function TerreniDashboard() {
         return;
       }
 
-      setScanData(payload.result);
-      setActiveTerrainId(payload.result.terrains[0]?.id);
-      setLoading(false);
-      setLoadingSeconds(0);
-      setScanJob((current) => ({
-        status: "completed",
-        error: null,
-        logs: current?.logs ?? [],
-      }));
+      applyResult(payload.result, { final: true });
       closeCurrentStream();
     });
 
@@ -692,7 +830,7 @@ export default function TerreniDashboard() {
       }));
       closeCurrentStream();
     };
-  }
+  }, [clearStreamReconnectWatchdog, selectedCategoryIds, selectedProvinceIds]);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
@@ -726,9 +864,7 @@ export default function TerreniDashboard() {
                   </p>
                 </div>
                 <div className="terrain-hero-panel p-5">
-                  <div className="terrain-keyline terrain-keyline-dark">
-                    Workflow
-                  </div>
+                  <div className="terrain-keyline terrain-keyline-dark">Workflow</div>
                   <div className="mt-4 space-y-3 text-sm leading-6 text-[#e5eee0]">
                     <p>1. Selezione geografica delle province target.</p>
                     <p>2. Ingest di fonti da dataset ufficiali e provider geospaziali.</p>
@@ -747,9 +883,7 @@ export default function TerreniDashboard() {
                 <span className="terrain-chip terrain-chip-dark">
                   Raggio operativo 350 m
                 </span>
-                <span className="terrain-chip terrain-chip-dark">
-                  Export CSV + KMZ
-                </span>
+                <span className="terrain-chip terrain-chip-dark">Export CSV + KMZ</span>
               </div>
             </div>
 
@@ -770,44 +904,32 @@ export default function TerreniDashboard() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div className="terrain-hero-kpi p-4">
-                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
-                    Province live
-                  </div>
-                  <div className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-white">
-                    {selectedProvinceIds.length}
-                  </div>
-                </div>
-                <div className="terrain-hero-kpi p-4">
-                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
-                    Fonti monitorate
-                  </div>
-                  <div className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-white">
-                    {selectedCategoryIds.length}
-                  </div>
-                </div>
-                <div className="terrain-hero-kpi p-4">
-                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
-                    Stato scan
-                  </div>
-                  <div className="mt-3 text-sm font-medium leading-6 text-[#edf2e7]">
-                    {loading
+                <HeroKpi
+                  label="Province live"
+                  value={selectedProvinceIds.length.toString()}
+                />
+                <HeroKpi
+                  label="Fonti monitorate"
+                  value={selectedCategoryIds.length.toString()}
+                />
+                <HeroKpi
+                  label="Stato scan"
+                  valueNode={
+                    loading
                       ? `In corso da ${loadingSeconds}s`
                       : scanJob?.status === "completed"
                         ? "Ultima scansione completata"
                         : scanJob?.status === "failed"
                           ? "Ultima scansione fallita"
-                          : "Pronto al lancio"}
-                  </div>
-                </div>
-                <div className="terrain-hero-kpi p-4">
-                  <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
-                    Ultimo log
-                  </div>
-                  <div className="mt-3 text-sm font-medium leading-6 text-[#edf2e7]">
-                    {latestLog?.message ?? "Nessuna esecuzione ancora registrata"}
-                  </div>
-                </div>
+                          : "Pronto al lancio"
+                  }
+                />
+                <HeroKpi
+                  label="Ultimo log"
+                  valueNode={
+                    latestLog?.message ?? "Nessuna esecuzione ancora registrata"
+                  }
+                />
               </div>
             </div>
           </div>
@@ -858,11 +980,7 @@ export default function TerreniDashboard() {
                         <button
                           key={province.id}
                           type="button"
-                          onClick={() =>
-                            setSelectedProvinceIds((current) =>
-                              toggleItem(current, province.id),
-                            )
-                          }
+                          onClick={() => handleToggleProvince(province.id)}
                           className={`rounded-[22px] border px-4 py-3 text-left transition ${
                             checked
                               ? "terrain-choice-card-active text-white"
@@ -904,11 +1022,7 @@ export default function TerreniDashboard() {
                         <button
                           key={category.id}
                           type="button"
-                          onClick={() =>
-                            setSelectedCategoryIds((current) =>
-                              toggleItem(current, category.id),
-                            )
-                          }
+                          onClick={() => handleToggleCategory(category.id)}
                           className={`w-full rounded-[24px] border p-4 text-left transition ${
                             checked
                               ? "terrain-choice-card-active text-white"
@@ -921,10 +1035,20 @@ export default function TerreniDashboard() {
                               style={{ backgroundColor: category.color }}
                             />
                             <div>
-                              <div className={`font-semibold ${checked ? "text-white" : "text-[var(--foreground)]"}`}>
+                              <div
+                                className={`font-semibold ${
+                                  checked
+                                    ? "text-white"
+                                    : "text-[var(--foreground)]"
+                                }`}
+                              >
                                 {category.label}
                               </div>
-                              <p className={`mt-1 text-xs leading-5 ${checked ? "text-[#d8e3d4]" : "text-[var(--muted)]"}`}>
+                              <p
+                                className={`mt-1 text-xs leading-5 ${
+                                  checked ? "text-[#d8e3d4]" : "text-[var(--muted)]"
+                                }`}
+                              >
                                 {category.description}
                               </p>
                             </div>
@@ -938,9 +1062,7 @@ export default function TerreniDashboard() {
             </section>
 
             <section className="terrain-shell terrain-shell-dark p-5 lg:p-6">
-              <div className="terrain-keyline terrain-keyline-dark">
-                Scan engine
-              </div>
+              <div className="terrain-keyline terrain-keyline-dark">Scan engine</div>
               <h2 className="terrain-section-title mt-3 text-[1.85rem] text-white">
                 Lancia la ricognizione
               </h2>
@@ -960,17 +1082,7 @@ export default function TerreniDashboard() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (!scanData) {
-                      return;
-                    }
-
-                    downloadBlob(
-                      `\ufeff${buildCsv(scanData)}`,
-                      "text/csv;charset=utf-8",
-                      "terreniready-export.csv",
-                    );
-                  }}
+                  onClick={handleExportCsv}
                   disabled={!scanData || scanData.terrains.length === 0}
                   className="terrain-button-secondary terrain-button-secondary-dark"
                 >
@@ -978,19 +1090,7 @@ export default function TerreniDashboard() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (!scanData || scanData.terrains.length === 0) {
-                      return;
-                    }
-
-                    void downloadKmz(scanData).catch((downloadError) => {
-                      setError(
-                        downloadError instanceof Error
-                          ? downloadError.message
-                          : "Export KMZ non riuscito. Riprova tra pochi secondi.",
-                      );
-                    });
-                  }}
+                  onClick={handleExportKmz}
                   disabled={!scanData || scanData.terrains.length === 0}
                   className="terrain-button-secondary terrain-button-secondary-dark sm:col-span-2 xl:col-span-1"
                 >
@@ -1040,13 +1140,13 @@ export default function TerreniDashboard() {
 
             {scanJob ? (
               <section className="terrain-shell p-5 lg:p-6">
-              <div className="flex items-end justify-between gap-4">
-                <div>
-                  <div className="terrain-keyline">Timeline</div>
-                  <h2 className="terrain-section-title mt-3 text-[1.8rem] text-[var(--foreground)]">
-                    Log scansione
-                  </h2>
-                </div>
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <div className="terrain-keyline">Timeline</div>
+                    <h2 className="terrain-section-title mt-3 text-[1.8rem] text-[var(--foreground)]">
+                      Log scansione
+                    </h2>
+                  </div>
                   <span className="rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.65)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted-strong)]">
                     {scanJob.status}
                   </span>
@@ -1055,7 +1155,10 @@ export default function TerreniDashboard() {
                 <div className="mt-5 max-h-72 overflow-auto rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.56)] p-4">
                   <div className="relative space-y-4 border-l border-[rgba(28,43,30,0.12)] pl-4">
                     {scanJob.logs.map((entry) => (
-                      <div key={`${entry.timestamp}-${entry.message}`} className="relative">
+                      <div
+                        key={`${entry.timestamp}-${entry.message}`}
+                        className="relative"
+                      >
                         <span className="absolute -left-[1.15rem] top-1.5 h-2.5 w-2.5 rounded-full bg-[var(--accent-strong)] ring-4 ring-[rgba(255,255,255,0.7)]" />
                         <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">
                           {new Date(entry.timestamp).toLocaleTimeString("it-IT")}
@@ -1085,42 +1188,28 @@ export default function TerreniDashboard() {
 
           <section className="space-y-5">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="terrain-stat-card">
-                <div className="terrain-keyline">Fonti intercettate</div>
-                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
-                  {scanData?.meta.totalSources ?? 0}
-                </div>
-                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  POI emissivi rilevati nelle province correnti.
-                </p>
-              </div>
-              <div className="terrain-stat-card">
-                <div className="terrain-keyline">Terreni candidati</div>
-                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
-                  {scanData?.meta.totalTerrains ?? 0}
-                </div>
-                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  Particelle catastali agganciate alla fonte più vicina.
-                </p>
-              </div>
-              <div className="terrain-stat-card">
-                <div className="terrain-keyline">Raggio operativo</div>
-                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
-                  {scanData?.meta.radiusMeters ?? 350}m
-                </div>
-                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  Buffer costante per il matching territoriale.
-                </p>
-              </div>
-              <div className="terrain-stat-card">
-                <div className="terrain-keyline">Avvisi tecnici</div>
-                <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
-                  {warningCount}
-                </div>
-                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  Segnalazioni tecniche su query o copertura dati.
-                </p>
-              </div>
+              <StatCard
+                title="Fonti intercettate"
+                value={scanData?.meta.totalSources ?? 0}
+                caption="POI emissivi rilevati nelle province correnti."
+              />
+              <StatCard
+                title="Terreni candidati"
+                value={scanData?.meta.totalTerrains ?? 0}
+                caption="Particelle catastali agganciate alla fonte più vicina."
+                suffix=""
+              />
+              <StatCard
+                title="Raggio operativo"
+                value={scanData?.meta.radiusMeters ?? 350}
+                caption="Buffer costante per il matching territoriale."
+                suffix="m"
+              />
+              <StatCard
+                title="Avvisi tecnici"
+                value={warningCount}
+                caption="Segnalazioni tecniche su query o copertura dati."
+              />
             </div>
 
             {scanData?.meta.warnings.map((warning) => (
@@ -1163,7 +1252,10 @@ export default function TerreniDashboard() {
                       <div className="mt-3 flex flex-wrap gap-2">
                         {selectedProvinceNames.length > 0 ? (
                           selectedProvinceNames.map((provinceName) => (
-                            <span key={provinceName} className="terrain-inline-pill">
+                            <span
+                              key={provinceName}
+                              className="terrain-inline-pill"
+                            >
                               {provinceName}
                             </span>
                           ))
@@ -1181,7 +1273,10 @@ export default function TerreniDashboard() {
                       <div className="mt-3 flex flex-wrap gap-2">
                         {selectedCategoryLabels.length > 0 ? (
                           selectedCategoryLabels.map((categoryLabel) => (
-                            <span key={categoryLabel} className="terrain-inline-pill">
+                            <span
+                              key={categoryLabel}
+                              className="terrain-inline-pill"
+                            >
                               {categoryLabel}
                             </span>
                           ))
@@ -1223,7 +1318,7 @@ export default function TerreniDashboard() {
                     sources={scanData?.sources ?? []}
                     terrains={scanData?.terrains ?? []}
                     activeTerrainId={activeTerrainId}
-                    onSelectTerrainId={setActiveTerrainId}
+                    onSelectTerrainId={selectAndRevealTerrain}
                   />
                 </div>
               </div>
@@ -1308,7 +1403,9 @@ export default function TerreniDashboard() {
                 </label>
                 <span className="terrain-chip">{selectedProvinceSummary}</span>
                 <span className="terrain-chip">{selectedCategorySummary}</span>
-                <span className="terrain-chip">{terrainSortLabel(terrainSortMode)}</span>
+                <span className="terrain-chip">
+                  {terrainSortLabel(terrainSortMode)}
+                </span>
               </div>
             </div>
 
@@ -1326,7 +1423,7 @@ export default function TerreniDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(scanData?.terrains ?? []).length === 0 ? (
+                  {sortedTerrains.length === 0 ? (
                     <tr>
                       <td
                         colSpan={7}
@@ -1337,67 +1434,15 @@ export default function TerreniDashboard() {
                       </td>
                     </tr>
                   ) : (
-                    sortedTerrains.map((terrain) => {
-                      const active = terrain.id === activeTerrainId;
-
-                      return (
-                        <tr
-                          key={terrain.id}
-                          ref={(node) => {
-                            if (node) {
-                              terrainRowRefs.current.set(terrain.id, node);
-                              return;
-                            }
-
-                            terrainRowRefs.current.delete(terrain.id);
-                          }}
-                          onClick={() => setActiveTerrainId(terrain.id)}
-                          className={`cursor-pointer rounded-[24px] transition ${
-                            active
-                              ? "bg-[linear-gradient(135deg,#18281c,#2d4330)] text-white shadow-[0_18px_40px_rgba(22,31,23,0.18)]"
-                              : "bg-[rgba(255,255,255,0.56)] text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] hover:bg-[rgba(255,255,255,0.78)]"
-                          }`}
-                        >
-                          <td className="rounded-l-[24px] px-4 py-4 font-semibold">
-                            {terrain.name}
-                          </td>
-                          <td className="px-4 py-4">
-                            {terrainComuneLabel(terrain, sourceById)}
-                          </td>
-                          <td className="px-4 py-4">
-                            {PROVINCE_MAP[terrain.provinceId].name}
-                          </td>
-                          <td className="px-4 py-4">
-                            <span
-                              className={`rounded-full px-3 py-1 text-xs font-medium ${
-                                active
-                                  ? "bg-white/10 text-[#d8e4d4]"
-                                  : "bg-[rgba(214,221,205,0.7)] text-[var(--muted-strong)]"
-                              }`}
-                            >
-                              {landuseLabel(terrain.landuse)}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4">
-                            {formatMeters(terrain.distanceMeters)}
-                          </td>
-                          <td className="px-4 py-4">{formatSqm(terrain.areaSqm)}</td>
-                          <td className="rounded-r-[24px] px-4 py-4">
-                            <div>{terrain.closestSourceName}</div>
-                            <div
-                              className={`mt-1 text-xs ${
-                                active ? "text-[#c7d6c5]" : "text-[var(--muted)]"
-                              }`}
-                            >
-                              {
-                                SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId]
-                                  .label
-                              }
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
+                    sortedTerrains.map((terrain) => (
+                      <TerrainRow
+                        key={terrain.id}
+                        terrain={terrain}
+                        active={terrain.id === activeTerrainId}
+                        comuneLabel={terrainComuneLabel(terrain, sourceById)}
+                        onSelect={selectAndRevealTerrain}
+                      />
+                    ))
                   )}
                 </tbody>
               </table>
@@ -1408,9 +1453,7 @@ export default function TerreniDashboard() {
             ref={dossierRef}
             className="terrain-shell terrain-shell-dark terrain-sticky-rail p-6"
           >
-            <div className="terrain-keyline terrain-keyline-dark">
-              Asset dossier
-            </div>
+            <div className="terrain-keyline terrain-keyline-dark">Asset dossier</div>
             <h2 className="terrain-section-title mt-3 text-[2rem] text-white">
               Scheda terreno
             </h2>
@@ -1427,38 +1470,22 @@ export default function TerreniDashboard() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                      Provincia
-                    </div>
-                    <div className="mt-2 font-semibold text-white">
-                      {PROVINCE_MAP[activeTerrain.provinceId].name}
-                    </div>
-                  </div>
-                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                      Uso
-                    </div>
-                    <div className="mt-2 font-semibold text-white">
-                      {landuseLabel(activeTerrain.landuse)}
-                    </div>
-                  </div>
-                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                      Distanza
-                    </div>
-                    <div className="mt-2 font-semibold text-white">
-                      {formatMeters(activeTerrain.distanceMeters)}
-                    </div>
-                  </div>
-                  <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                      Superficie
-                    </div>
-                    <div className="mt-2 font-semibold text-white">
-                      {formatSqm(activeTerrain.areaSqm)}
-                    </div>
-                  </div>
+                  <DossierCell
+                    label="Provincia"
+                    value={PROVINCE_MAP[activeTerrain.provinceId].name}
+                  />
+                  <DossierCell
+                    label="Uso"
+                    value={landuseLabel(activeTerrain.landuse)}
+                  />
+                  <DossierCell
+                    label="Distanza"
+                    value={formatMeters(activeTerrain.distanceMeters)}
+                  />
+                  <DossierCell
+                    label="Superficie"
+                    value={formatSqm(activeTerrain.areaSqm)}
+                  />
                 </div>
 
                 <div className="terrain-dossier-card p-5">
@@ -1531,118 +1558,236 @@ export default function TerreniDashboard() {
               </p>
             )}
           </aside>
-      </section>
+        </section>
 
-      {isTerrainPreviewOpen && activeTerrain ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,16,11,0.72)] px-4 py-6 backdrop-blur-sm">
-          <div className="terrain-preview-shell relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px]">
-            <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5 text-white">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.2em] text-[#9eb399]">
-                  Anteprima poligono
-                </div>
-                <h3 className="terrain-panel-title mt-2 text-2xl">
-                  {activeTerrain.name}
-                </h3>
-                <p className="mt-2 text-sm leading-6 text-[#d4dfd1]">
-                  Poligono catastale visualizzato nel SaaS con buffer operativo e
-                  particelle WMS ufficiali.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsTerrainPreviewOpen(false)}
-                className="inline-flex rounded-full border border-white/12 bg-white/8 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/12"
-              >
-                Chiudi
-              </button>
-            </div>
-
-            <div className="grid gap-5 overflow-y-auto px-6 py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
-              <div className="min-h-[58vh] overflow-hidden rounded-[28px] border border-white/10 bg-[#0e1711]">
-                <TerrainMap
-                  selectedProvinceIds={[activeTerrain.provinceId]}
-                  sources={activeSource ? [activeSource] : []}
-                  terrains={[activeTerrain]}
-                  activeTerrainId={activeTerrain.id}
-                  onSelectTerrainId={setActiveTerrainId}
-                />
-              </div>
-
-              <div className="space-y-4 text-sm leading-6 text-[#dce7d9]">
-                <div className="terrain-dossier-card terrain-dossier-card-soft p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Sintesi rapida
+        {isTerrainPreviewOpen && activeTerrain ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,16,11,0.72)] px-4 py-6 backdrop-blur-sm">
+            <div className="terrain-preview-shell relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px]">
+              <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5 text-white">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#9eb399]">
+                    Anteprima poligono
                   </div>
-                  <div className="mt-3 space-y-2">
-                    <p>
-                      <span className="text-[#9eb399]">Uso:</span>{" "}
-                      {landuseLabel(activeTerrain.landuse)}
-                    </p>
-                    <p>
-                      <span className="text-[#9eb399]">Distanza:</span>{" "}
-                      {formatMeters(activeTerrain.distanceMeters)}
-                    </p>
-                    <p>
-                      <span className="text-[#9eb399]">Superficie:</span>{" "}
-                      {formatSqm(activeTerrain.areaSqm)}
-                    </p>
-                    <p>
-                      <span className="text-[#9eb399]">Comune:</span>{" "}
-                      {terrainComuneLabel(activeTerrain, sourceById)}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="terrain-dossier-card terrain-dossier-card-soft p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Fonte associata
-                  </div>
-                  <div className="mt-3 text-base font-semibold text-white">
-                    {activeTerrain.closestSourceName}
-                  </div>
-                  <p className="mt-1 text-sm text-[#d4dfd1]">
-                    {
-                      SOURCE_CATEGORY_MAP[activeTerrain.closestSourceCategoryId]
-                        .label
-                    }
-                  </p>
-                  <p className="mt-2 text-xs text-[#a9bda5]">
-                    Provider terreno: {activeTerrain.providerLabel}
+                  <h3 className="terrain-panel-title mt-2 text-2xl">
+                    {activeTerrain.name}
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-[#d4dfd1]">
+                    Poligono catastale visualizzato nel SaaS con buffer operativo e
+                    particelle WMS ufficiali.
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setIsTerrainPreviewOpen(false)}
+                  className="inline-flex rounded-full border border-white/12 bg-white/8 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/12"
+                >
+                  Chiudi
+                </button>
+              </div>
 
-                <div className="terrain-dossier-card p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Azioni
+              <div className="grid gap-5 overflow-y-auto px-6 py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="min-h-[58vh] overflow-hidden rounded-[28px] border border-white/10 bg-[#0e1711]">
+                  <TerrainMap
+                    selectedProvinceIds={[activeTerrain.provinceId]}
+                    sources={activeSource ? [activeSource] : []}
+                    terrains={[activeTerrain]}
+                    activeTerrainId={activeTerrain.id}
+                    onSelectTerrainId={setActiveTerrainId}
+                  />
+                </div>
+
+                <div className="space-y-4 text-sm leading-6 text-[#dce7d9]">
+                  <div className="terrain-dossier-card terrain-dossier-card-soft p-5">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                      Sintesi rapida
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <p>
+                        <span className="text-[#9eb399]">Uso:</span>{" "}
+                        {landuseLabel(activeTerrain.landuse)}
+                      </p>
+                      <p>
+                        <span className="text-[#9eb399]">Distanza:</span>{" "}
+                        {formatMeters(activeTerrain.distanceMeters)}
+                      </p>
+                      <p>
+                        <span className="text-[#9eb399]">Superficie:</span>{" "}
+                        {formatSqm(activeTerrain.areaSqm)}
+                      </p>
+                      <p>
+                        <span className="text-[#9eb399]">Comune:</span>{" "}
+                        {terrainComuneLabel(activeTerrain, sourceById)}
+                      </p>
+                    </div>
                   </div>
-                  <div className="mt-3 flex flex-col gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsTerrainPreviewOpen(false);
-                        focusActiveTerrainOnAtlas();
-                      }}
-                      className="inline-flex justify-center rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
-                    >
-                      Vai alla mappa principale
-                    </button>
-                    <a
-                      href={terrainMapUrl(activeTerrain)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex justify-center rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/10"
-                    >
-                      Apri centroide in Google Maps
-                    </a>
+
+                  <div className="terrain-dossier-card terrain-dossier-card-soft p-5">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                      Fonte associata
+                    </div>
+                    <div className="mt-3 text-base font-semibold text-white">
+                      {activeTerrain.closestSourceName}
+                    </div>
+                    <p className="mt-1 text-sm text-[#d4dfd1]">
+                      {
+                        SOURCE_CATEGORY_MAP[activeTerrain.closestSourceCategoryId]
+                          .label
+                      }
+                    </p>
+                    <p className="mt-2 text-xs text-[#a9bda5]">
+                      Provider terreno: {activeTerrain.providerLabel}
+                    </p>
+                  </div>
+
+                  <div className="terrain-dossier-card p-5">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+                      Azioni
+                    </div>
+                    <div className="mt-3 flex flex-col gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsTerrainPreviewOpen(false);
+                          focusActiveTerrainOnAtlas();
+                        }}
+                        className="inline-flex justify-center rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
+                      >
+                        Vai alla mappa principale
+                      </button>
+                      <a
+                        href={terrainMapUrl(activeTerrain)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex justify-center rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/10"
+                      >
+                        Apri centroide in Google Maps
+                      </a>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
       </div>
     </div>
   );
 }
+
+// --- Sub-components memoizzati ----------------------------------------
+// Estrarre le celle ripetute (KPI hero, stat card, row del ledger) evita
+// rerender inutili quando cambiano loading/log: React si ferma al livello
+// della cella se le prop sono invariate (shallow compare via React.memo).
+
+function HeroKpi({
+  label,
+  value,
+  valueNode,
+}: {
+  label: string;
+  value?: string;
+  valueNode?: React.ReactNode;
+}) {
+  return (
+    <div className="terrain-hero-kpi p-4">
+      <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#9ab096]">
+        {label}
+      </div>
+      <div className="mt-3 text-sm font-medium leading-6 text-[#edf2e7]">
+        {valueNode ?? (
+          <span className="text-3xl font-semibold tracking-[-0.05em] text-white">
+            {value}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  caption,
+  suffix,
+}: {
+  title: string;
+  value: number;
+  caption: string;
+  suffix?: string;
+}) {
+  return (
+    <div className="terrain-stat-card">
+      <div className="terrain-keyline">{title}</div>
+      <div className="mt-4 text-4xl font-semibold tracking-[-0.05em] text-[var(--foreground)]">
+        {value}
+        {suffix ?? ""}
+      </div>
+      <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{caption}</p>
+    </div>
+  );
+}
+
+function DossierCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="terrain-dossier-card terrain-dossier-card-soft p-4">
+      <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+        {label}
+      </div>
+      <div className="mt-2 font-semibold text-white">{value}</div>
+    </div>
+  );
+}
+
+type TerrainRowProps = {
+  terrain: TerrainFeature;
+  active: boolean;
+  comuneLabel: string;
+  onSelect: (terrainId: string) => void;
+};
+
+// Il ledger puo avere fino a 250 righe: senza memo ogni click sul sort
+// re-renderizza tutte. Con memo confrontiamo solo terrain/active/comune.
+const TerrainRow = memo(function TerrainRow({
+  terrain,
+  active,
+  comuneLabel,
+  onSelect,
+}: TerrainRowProps) {
+  return (
+    <tr
+      onClick={() => onSelect(terrain.id)}
+      className={`cursor-pointer rounded-[24px] transition ${
+        active
+          ? "bg-[linear-gradient(135deg,#18281c,#2d4330)] text-white shadow-[0_18px_40px_rgba(22,31,23,0.18)]"
+          : "bg-[rgba(255,255,255,0.56)] text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] hover:bg-[rgba(255,255,255,0.78)]"
+      }`}
+    >
+      <td className="rounded-l-[24px] px-4 py-4 font-semibold">{terrain.name}</td>
+      <td className="px-4 py-4">{comuneLabel}</td>
+      <td className="px-4 py-4">{PROVINCE_MAP[terrain.provinceId].name}</td>
+      <td className="px-4 py-4">
+        <span
+          className={`rounded-full px-3 py-1 text-xs font-medium ${
+            active
+              ? "bg-white/10 text-[#d8e4d4]"
+              : "bg-[rgba(214,221,205,0.7)] text-[var(--muted-strong)]"
+          }`}
+        >
+          {landuseLabel(terrain.landuse)}
+        </span>
+      </td>
+      <td className="px-4 py-4">{formatMeters(terrain.distanceMeters)}</td>
+      <td className="px-4 py-4">{formatSqm(terrain.areaSqm)}</td>
+      <td className="rounded-r-[24px] px-4 py-4">
+        <div>{terrain.closestSourceName}</div>
+        <div
+          className={`mt-1 text-xs ${
+            active ? "text-[#c7d6c5]" : "text-[var(--muted)]"
+          }`}
+        >
+          {SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId].label}
+        </div>
+      </td>
+    </tr>
+  );
+});
