@@ -325,6 +325,33 @@ function reportProgress(reporter: ProgressReporter | undefined, message: string)
   reporter?.({ message });
 }
 
+// Log strutturato su stderr: Render lo cattura nel suo log stream e
+// possiamo filtrarlo con livello=error. Evitiamo di rumoreggiare sui
+// flussi normali (reportProgress gia parla al client) e logghiamo solo
+// errori di rete/provider o abort fuori dai casi attesi. Include
+// context oggetto + nome/messaggio dell'errore ed e robusto a non-Error.
+type LogContext = Record<string, unknown>;
+
+function logError(message: string, context: LogContext, error?: unknown): void {
+  const serialized =
+    error instanceof Error
+      ? { name: error.name, message: error.message }
+      : error !== undefined
+        ? { name: "NonError", message: String(error) }
+        : undefined;
+
+  console.error(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "error",
+      scope: "overpass",
+      message,
+      ...context,
+      ...(serialized ? { error: serialized } : {}),
+    }),
+  );
+}
+
 function endpointRole(index: number) {
   return index === 0 ? "primario" : `fallback ${index}`;
 }
@@ -1228,7 +1255,7 @@ async function fetchTerrainObstaclesForProvince(
   // province girano in parallelo a loro volta.
   //
   // Nota: la vecchia logica aveva un `break` al primo warningTriggered
-  // per non lanciare altri blocchi quando un chunk scade in soft-timeout.
+  // per non lanciare altri blocchi quando un chunk scada in soft-timeout.
   // In parallelo tutti i chunk sono gia in volo all'inizio, quindi non
   // c'e un reale "fermare lavoro futuro": accettiamo tutti i risultati e
   // conserviamo il primo warning per il banner UI.
@@ -1445,7 +1472,7 @@ async function scanProvince(
           terrains: [] as TerrainFeature[],
           warning: null as string | null,
         }
-      : await fetchCadastralTerrainsNearSources(provinceId, sources, reporter);
+      : await fetchCadastralTerrainsNearSources(provinceId, sources, reporter, signal);
   const sortedCandidates = terrainLookup.terrains.sort(
     (left, right) => left.distanceMeters - right.distanceMeters,
   );
@@ -1697,6 +1724,8 @@ export async function runScan(
 
       return result;
     } catch (error) {
+      const isAbort = error instanceof Error && error.name === "AbortError";
+
       if (
         cachedScanResult?.value &&
         isRecoverableOverpassError(error)
@@ -1704,6 +1733,16 @@ export async function runScan(
         reportProgress(
           reporter,
           "Le sorgenti pubbliche sono sature: restituisco l'ultimo risultato utile disponibile da cache.",
+        );
+
+        logError(
+          "runScan ha ripiegato su cache per saturazione provider",
+          {
+            provinceIds: provinces,
+            categoryIds: categories,
+            fallback: "cached-result",
+          },
+          error,
         );
 
         const cachedResult = cloneScanResponse(cachedScanResult.value);
@@ -1715,6 +1754,19 @@ export async function runScan(
         cachedResult.meta.notes = cachedResult.meta.notes ?? [];
 
         return cachedResult;
+      }
+
+      // Non logghiamo gli abort come errori: sono legittimi (client
+      // ha chiuso la connessione). Tutto il resto e visibilita reale.
+      if (!isAbort) {
+        logError(
+          "runScan ha fallito in modo non recuperabile",
+          {
+            provinceIds: provinces,
+            categoryIds: categories,
+          },
+          error,
+        );
       }
 
       throw error;
