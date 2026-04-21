@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -375,7 +376,9 @@ export default function TerreniDashboard() {
   const streamReconnectTimerRef = useRef<number | null>(null);
   const streamReconnectNoticeRef = useRef(false);
   const atlasRef = useRef<HTMLElement | null>(null);
-  const dossierRef = useRef<HTMLElement | null>(null);
+  // Riga "accordion" attiva: la usiamo come ancora per scrollIntoView dopo
+  // l'espansione, cosi l'utente vede la scheda completa senza scorrere.
+  const activeAccordionRef = useRef<HTMLTableRowElement | null>(null);
 
   // --- Derivati memoizzati ---------------------------------------------
   // Il ledger dei terreni viene ri-ordinato ad ogni setState (loading,
@@ -533,20 +536,27 @@ export default function TerreniDashboard() {
     });
   }, []);
 
-  // Quando l'utente clicca una riga (o un poligono in mappa) seleziona il
-  // terreno attivo e porta lo scheda dossier in vista: evita il ping-pong
-  // scroll tra tabella (sinistra/basso) e scheda verde (destra/alto).
-  //
-  // Su desktop XL la scheda e` sticky top: 1.5rem quindi scrollIntoView
-  // allinea la riga tabella attiva con la scheda, rendendole leggibili
-  // entrambe nel viewport; sotto XL la scheda non e` sticky e compare
-  // sotto la tabella, quindi scrolliamo direttamente alla scheda con
-  // block:"start". `prefers-reduced-motion` viene rispettato saltando
-  // l'animazione smooth.
+  // Click su una riga del ledger = toggle dell'accordion.
+  // - Stessa riga cliccata di nuovo -> chiude la scheda (activeTerrainId
+  //   torna undefined).
+  // - Nuova riga -> diventa attiva, la scheda scheda si apre sotto.
+  // Dopo il toggle aspettiamo un animation frame (React deve montare la
+  // riga accordion nel DOM) e poi scrolliamo la riga attiva in vista:
+  // `block: "nearest"` evita salti bruschi se la riga e` gia visibile,
+  // scrollando solo quando serve. Rispetta prefers-reduced-motion.
   const selectAndRevealTerrain = useCallback((terrainId: string) => {
-    setActiveTerrainId(terrainId);
+    let willBeActive = false;
 
-    if (typeof window === "undefined") {
+    setActiveTerrainId((current) => {
+      if (current === terrainId) {
+        willBeActive = false;
+        return undefined;
+      }
+      willBeActive = true;
+      return terrainId;
+    });
+
+    if (typeof window === "undefined" || !willBeActive) {
       return;
     }
 
@@ -555,23 +565,10 @@ export default function TerreniDashboard() {
     ).matches;
     const behavior: ScrollBehavior = prefersReducedMotion ? "auto" : "smooth";
 
-    // Allineamento adattivo: su desktop wide la scheda dossier e` gia
-    // nel layout a due colonne quindi basta portarla in cima; su mobile
-    // la scheda sta sotto e "nearest" non aiuta, quindi forziamo "start".
-    const isWide = window.innerWidth >= 1280;
-    const dossier = dossierRef.current;
-
-    if (!dossier) {
-      return;
-    }
-
-    // requestAnimationFrame: evita che lo scroll parta prima che React
-    // abbia applicato il nuovo stato al DOM (altrimenti la posizione
-    // calcolata fa riferimento al vecchio layout della scheda vuota).
     window.requestAnimationFrame(() => {
-      dossier.scrollIntoView({
+      activeAccordionRef.current?.scrollIntoView({
         behavior,
-        block: isWide ? "start" : "start",
+        block: "nearest",
         inline: "nearest",
       });
     });
@@ -1369,195 +1366,109 @@ export default function TerreniDashboard() {
           </section>
         </main>
 
-        <section className="grid gap-6 xl:items-start xl:grid-cols-[minmax(0,1fr)_390px]">
-          <div className="terrain-shell p-5 lg:p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <div className="terrain-keyline">Registro operativo</div>
-                <h2 className="terrain-section-title mt-3 text-[2.1rem] text-[var(--foreground)]">
-                  Ledger dei terreni
-                </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
-                  Ogni riga è una particella catastale con la sua fonte emissiva più
-                  vicina. La selezione aggiorna la mappa e la scheda dossier.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="flex min-w-[220px] flex-col gap-2">
-                  <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
-                    Ordina per
-                  </span>
-                  <select
-                    value={terrainSortMode}
-                    onChange={(event) =>
-                      setTerrainSortMode(event.target.value as TerrainSortMode)
-                    }
-                    className="terrain-select px-4 py-3 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[rgba(44,66,49,0.28)]"
-                  >
-                    <option value="distance-asc">Distanza crescente</option>
-                    <option value="comune-asc">Comune A-Z</option>
-                    <option value="comune-desc">Comune Z-A</option>
-                    <option value="area-desc">Superficie decrescente</option>
-                    <option value="area-asc">Superficie crescente</option>
-                  </select>
-                </label>
-                <span className="terrain-chip">{selectedProvinceSummary}</span>
-                <span className="terrain-chip">{selectedCategorySummary}</span>
-                <span className="terrain-chip">
-                  {terrainSortLabel(terrainSortMode)}
-                </span>
-              </div>
+        <section className="terrain-shell p-5 lg:p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="terrain-keyline">Registro operativo</div>
+              <h2 className="terrain-section-title mt-3 text-[2.1rem] text-[var(--foreground)]">
+                Ledger dei terreni
+              </h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                Ogni riga è una particella catastale con la sua fonte emissiva più
+                vicina. Clicca una riga per espandere la scheda dettagli inline;
+                cliccala di nuovo per chiuderla.
+              </p>
             </div>
-
-            <div className="mt-5 overflow-x-auto">
-              <table className="terrain-ledger-table min-w-full">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
-                    <th className="px-4 pb-1">Terreno</th>
-                    <th className="px-4 pb-1">Comune</th>
-                    <th className="px-4 pb-1">Provincia</th>
-                    <th className="px-4 pb-1">Uso</th>
-                    <th className="px-4 pb-1">Distanza</th>
-                    <th className="px-4 pb-1">Superficie</th>
-                    <th className="px-4 pb-1">Fonte vicina</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedTerrains.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={7}
-                        className="rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-5 py-8 text-center text-sm leading-6 text-[var(--muted)]"
-                      >
-                        Nessun terreno ancora presente. Avvia una scansione per
-                        riempire il ledger operativo.
-                      </td>
-                    </tr>
-                  ) : (
-                    sortedTerrains.map((terrain) => (
-                      <TerrainRow
-                        key={terrain.id}
-                        terrain={terrain}
-                        active={terrain.id === activeTerrainId}
-                        comuneLabel={terrainComuneLabel(terrain, sourceById)}
-                        onSelect={selectAndRevealTerrain}
-                      />
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[220px] flex-col gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
+                  Ordina per
+                </span>
+                <select
+                  value={terrainSortMode}
+                  onChange={(event) =>
+                    setTerrainSortMode(event.target.value as TerrainSortMode)
+                  }
+                  className="terrain-select px-4 py-3 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[rgba(44,66,49,0.28)]"
+                >
+                  <option value="distance-asc">Distanza crescente</option>
+                  <option value="comune-asc">Comune A-Z</option>
+                  <option value="comune-desc">Comune Z-A</option>
+                  <option value="area-desc">Superficie decrescente</option>
+                  <option value="area-asc">Superficie crescente</option>
+                </select>
+              </label>
+              <span className="terrain-chip">{selectedProvinceSummary}</span>
+              <span className="terrain-chip">{selectedCategorySummary}</span>
+              <span className="terrain-chip">
+                {terrainSortLabel(terrainSortMode)}
+              </span>
             </div>
           </div>
 
-          <aside
-            ref={dossierRef}
-            className="terrain-shell terrain-shell-dark terrain-sticky-rail p-6"
-          >
-            <div className="terrain-keyline terrain-keyline-dark">Asset dossier</div>
-            <h2 className="terrain-section-title mt-3 text-[2rem] text-white">
-              Scheda terreno
-            </h2>
-
-            {activeTerrain ? (
-              <div className="mt-5 space-y-5 text-sm leading-6 text-[#e4ece0]">
-                <div className="terrain-dossier-card p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Nome asset
-                  </div>
-                  <div className="mt-2 text-2xl font-semibold leading-tight text-white">
-                    {activeTerrain.name}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <DossierCell
-                    label="Provincia"
-                    value={PROVINCE_MAP[activeTerrain.provinceId].name}
-                  />
-                  <DossierCell
-                    label="Uso"
-                    value={landuseLabel(activeTerrain.landuse)}
-                  />
-                  <DossierCell
-                    label="Distanza"
-                    value={formatMeters(activeTerrain.distanceMeters)}
-                  />
-                  <DossierCell
-                    label="Superficie"
-                    value={formatSqm(activeTerrain.areaSqm)}
-                  />
-                </div>
-
-                <div className="terrain-dossier-card p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Fonte più vicina
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white">
-                    {activeTerrain.closestSourceName}
-                  </div>
-                  <div className="mt-1 text-sm text-[#c5d4c3]">
-                    {
-                      SOURCE_CATEGORY_MAP[activeTerrain.closestSourceCategoryId]
-                        .label
-                    }
-                  </div>
-                </div>
-
-                <div className="terrain-dossier-card p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Coordinate centroide
-                  </div>
-                  <div className="mt-3 font-mono text-sm leading-6 text-[#edf3e9]">
-                    {activeTerrain.center.lat.toFixed(6)},{" "}
-                    {activeTerrain.center.lng.toFixed(6)}
-                  </div>
-                  <div className="mt-3 text-xs leading-5 text-[#b7c7b4]">
-                    Provider: {activeTerrain.providerLabel}
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={focusActiveTerrainOnAtlas}
-                      className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
+          <div className="mt-5 overflow-x-auto">
+            <table className="terrain-ledger-table min-w-full">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                  <th className="px-4 pb-1">Terreno</th>
+                  <th className="px-4 pb-1">Comune</th>
+                  <th className="px-4 pb-1">Provincia</th>
+                  <th className="px-4 pb-1">Uso</th>
+                  <th className="px-4 pb-1">Distanza</th>
+                  <th className="px-4 pb-1">Superficie</th>
+                  <th className="px-4 pb-1">Fonte vicina</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedTerrains.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.55)] px-5 py-8 text-center text-sm leading-6 text-[var(--muted)]"
                     >
-                      Vedi poligono nella mappa
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsTerrainPreviewOpen(true)}
-                      className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.08)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.14)]"
-                    >
-                      Visualizza poligono
-                    </button>
-                  </div>
-                  <a
-                    href={terrainMapUrl(activeTerrain)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-3 inline-flex text-xs font-medium uppercase tracking-[0.14em] text-[#cddc88] underline underline-offset-4"
-                  >
-                    Apri centroide in Google Maps
-                  </a>
-                </div>
-
-                <div className="terrain-dossier-card bg-[#111b14] p-5">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-                    Step successivi
-                  </div>
-                  <div className="mt-3 space-y-2 text-sm leading-6 text-[#d3dfd1]">
-                    <p>1. Verifica particella sul layer catastale ufficiale.</p>
-                    <p>2. Avvia visura o convenzione per proprietario e titolarità.</p>
-                    <p>3. Integra urbanistica e readiness nella shortlist finale.</p>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-5 text-sm leading-6 text-[#cfdec9]">
-                Seleziona un terreno dalla tabella o dalla mappa per riempire il
-                dossier fondiario.
-              </p>
-            )}
-          </aside>
+                      Nessun terreno ancora presente. Avvia una scansione per
+                      riempire il ledger operativo.
+                    </td>
+                  </tr>
+                ) : (
+                  // Ogni riga puo' espandere il proprio accordion inline.
+                  // Il Fragment tiene la coppia row+accordion unita nel DOM
+                  // della tbody mantenendo la semantica del ledger.
+                  sortedTerrains.map((terrain) => {
+                    const isActive = terrain.id === activeTerrainId;
+                    return (
+                      <Fragment key={terrain.id}>
+                        <TerrainRow
+                          terrain={terrain}
+                          active={isActive}
+                          comuneLabel={terrainComuneLabel(terrain, sourceById)}
+                          onSelect={selectAndRevealTerrain}
+                        />
+                        {isActive && activeTerrain ? (
+                          <tr ref={activeAccordionRef}>
+                            <td colSpan={7} className="px-0 pt-2 pb-4">
+                              <TerrainAccordion
+                                terrain={activeTerrain}
+                                comuneLabel={terrainComuneLabel(
+                                  activeTerrain,
+                                  sourceById,
+                                )}
+                                onFocusMap={focusActiveTerrainOnAtlas}
+                                onOpenPolygonPreview={() =>
+                                  setIsTerrainPreviewOpen(true)
+                                }
+                                onClose={() => setActiveTerrainId(undefined)}
+                              />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
 
         {isTerrainPreviewOpen && activeTerrain ? (
@@ -1791,3 +1702,121 @@ const TerrainRow = memo(function TerrainRow({
     </tr>
   );
 });
+
+// --- Accordion inline --------------------------------------------------
+// Riga "detail" che si espande sotto la riga ledger attiva. Occupa tutta
+// la larghezza della tabella (colSpan=7) e porta dentro le info dossier
+// + azioni (vedi poligono nella mappa, apri modal anteprima, Google
+// Maps). E` deliberatamente priva di interattivita` complessa: tutto lo
+// stato rimane nel TerreniDashboard parent.
+
+type TerrainAccordionProps = {
+  terrain: TerrainFeature;
+  comuneLabel: string;
+  onFocusMap: () => void;
+  onOpenPolygonPreview: () => void;
+  onClose: () => void;
+};
+
+function TerrainAccordion({
+  terrain,
+  comuneLabel,
+  onFocusMap,
+  onOpenPolygonPreview,
+  onClose,
+}: TerrainAccordionProps) {
+  const category = SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId];
+
+  return (
+    <div className="terrain-accordion-panel relative rounded-[28px] border border-[rgba(27,43,30,0.12)] bg-[linear-gradient(180deg,#0f1b14,#1a2c1f)] p-5 text-[#e4ece0] shadow-[0_20px_60px_rgba(11,20,13,0.28)] lg:p-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#98ae96]">
+            Scheda terreno
+          </div>
+          <h3 className="mt-2 text-2xl font-semibold leading-tight text-white">
+            {terrain.name}
+          </h3>
+          <p className="mt-1 text-sm text-[#c5d4c3]">
+            {comuneLabel} · {PROVINCE_MAP[terrain.provinceId].name}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Chiudi scheda"
+          className="self-start rounded-full border border-white/12 bg-white/6 px-4 py-2 text-[11px] font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/12"
+        >
+          Chiudi
+        </button>
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <DossierCell label="Uso" value={landuseLabel(terrain.landuse)} />
+        <DossierCell label="Distanza" value={formatMeters(terrain.distanceMeters)} />
+        <DossierCell label="Superficie" value={formatSqm(terrain.areaSqm)} />
+        <DossierCell
+          label="Fonti in buffer"
+          value={terrain.sourceCountInRange.toString()}
+        />
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        <div className="terrain-dossier-card p-5">
+          <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+            Fonte più vicina
+          </div>
+          <div className="mt-2 text-lg font-semibold text-white">
+            {terrain.closestSourceName}
+          </div>
+          <div className="mt-1 text-sm text-[#c5d4c3]">{category.label}</div>
+          <div className="mt-3 text-xs uppercase tracking-[0.18em] text-[#98ae96]">
+            Coordinate centroide
+          </div>
+          <div className="mt-1 font-mono text-sm leading-6 text-[#edf3e9]">
+            {terrain.center.lat.toFixed(6)}, {terrain.center.lng.toFixed(6)}
+          </div>
+          <div className="mt-2 text-xs leading-5 text-[#b7c7b4]">
+            Provider: {terrain.providerLabel}
+          </div>
+        </div>
+
+        <div className="terrain-dossier-card bg-[#111b14] p-5">
+          <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+            Step successivi
+          </div>
+          <div className="mt-3 space-y-2 text-sm leading-6 text-[#d3dfd1]">
+            <p>1. Verifica particella sul layer catastale ufficiale.</p>
+            <p>2. Avvia visura o convenzione per proprietario e titolarità.</p>
+            <p>3. Integra urbanistica e readiness nella shortlist finale.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={onFocusMap}
+          className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
+        >
+          Vedi poligono nella mappa
+        </button>
+        <button
+          type="button"
+          onClick={onOpenPolygonPreview}
+          className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.08)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.14)]"
+        >
+          Anteprima poligono a tutto schermo
+        </button>
+        <a
+          href={terrainMapUrl(terrain)}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/10"
+        >
+          Apri centroide in Google Maps
+        </a>
+      </div>
+    </div>
+  );
+}
