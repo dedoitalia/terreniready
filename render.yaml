@@ -23,3 +23,12 @@ services:
       #   value: "140"
       # - key: TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS
       #   value: "15000"
+      # Concurrency della pipeline scan (vedi src/lib/overpass.ts e
+      # cadastral-wfs.ts). Alzare se non si vedono 429 da Overpass,
+      # abbassare se appaiono.
+      # - key: TERRENI_PROVINCE_CONCURRENCY
+      #   value: "2"
+      # - key: TERRENI_CADASTRAL_CONCURRENCY
+      #   value: "4"
+      # - key: TERRENI_OBSTACLE_CONCURRENCY
+      #   value: "2"

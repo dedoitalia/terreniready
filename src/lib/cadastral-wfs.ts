@@ -26,6 +26,16 @@ const CADASTRAL_BBOX_SPLIT_DEPTH = 3;
 const CADASTRAL_WFS_PAGE_SIZE = 200;
 const CADASTRAL_WFS_MAX_PAGES = 6;
 const CADASTRAL_WFS_CACHE_TTL_MS = 45 * 60 * 1000;
+// Il WFS Agenzia Entrate e` un servizio diverso da Overpass: ha rate
+// limit autonomi e non mostra 429 aggressivi come OSM. Mandare piu
+// chunk in parallelo taglia la pagina cadastrale che di solito e` il
+// bottleneck di una scansione (piu lento della parte OSM).
+//
+// Default 4 parallele; tunabile via env TERRENI_CADASTRAL_CONCURRENCY.
+const CADASTRAL_CHUNK_CONCURRENCY = parsePositiveIntegerEnvCadastral(
+  "TERRENI_CADASTRAL_CONCURRENCY",
+  4,
+);
 const MIN_PARCEL_AREA_SQM = 250;
 const TECHNICAL_PARCEL_MIN_SPAN_METERS = 12;
 const TECHNICAL_PARCEL_ASPECT_RATIO = 8;
@@ -109,6 +119,44 @@ function getGlobalStore<T>(key: string, init: () => T) {
   const created = init();
   globalScope[key] = created;
   return created;
+}
+
+// parsePositiveIntegerEnv duplicato volutamente qui: tenere cadastral-wfs
+// auto-contenuto evita import ciclico con overpass.ts.
+function parsePositiveIntegerEnvCadastral(key: string, fallback: number) {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+// Launcher parallelo con limite di concorrenza. Preserva l'ordine dei
+// risultati (results[i] corrisponde a tasks[i]). Ogni worker tira la
+// prossima task disponibile appena finisce la precedente.
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number,
+): Promise<T[]> {
+  if (tasks.length === 0) return [];
+  const results: T[] = new Array(tasks.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= tasks.length) return;
+      results[index] = await tasks[index]();
+    }
+  };
+
+  const poolSize = Math.min(Math.max(1, concurrency), tasks.length);
+  const workers: Array<Promise<void>> = [];
+  for (let i = 0; i < poolSize; i += 1) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
 }
 
 const wfsCache = getGlobalStore<Map<string, CachedWfsValue>>(
@@ -960,31 +1008,42 @@ export async function fetchCadastralTerrainsNearSources(
   );
   reportProgress(
     reporter,
-    `${province.name}: avvio ricerca particelle catastali nel raggio in ${anchorChunks.length} blocchi.`,
+    `${province.name}: avvio ricerca particelle catastali nel raggio in ${anchorChunks.length} blocchi (concurrency=${Math.min(CADASTRAL_CHUNK_CONCURRENCY, anchorChunks.length)}).`,
   );
 
-  for (const [chunkIndex, anchorChunk] of anchorChunks.entries()) {
-    const chunkSourceCount = anchorChunk.reduce(
-      (sum, anchor) => sum + anchor.sourceIds.length,
-      0,
-    );
-    reportProgress(
-      reporter,
-      `${province.name}: blocco particelle ${chunkIndex + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkSourceCount} fonti.`,
-    );
+  // I chunk sono indipendenti (bbox disgiunti): li lanciamo in parallelo
+  // limitando la concurrency al valore configurato. Questo taglia il
+  // wall-clock della fase catastale di circa chunks/concurrency.
+  const chunkTasks = anchorChunks.map(
+    (anchorChunk, chunkIndex) => async () => {
+      const chunkSourceCount = anchorChunk.reduce(
+        (sum, anchor) => sum + anchor.sourceIds.length,
+        0,
+      );
+      reportProgress(
+        reporter,
+        `${province.name}: blocco particelle ${chunkIndex + 1}/${anchorChunks.length} avviato (${anchorChunk.length} ancore, ${chunkSourceCount} fonti).`,
+      );
 
-    const chunkResult = await fetchParcelsForAnchorChunk(
-      province.name,
-      `${chunkIndex + 1}/${anchorChunks.length}`,
-      anchorChunk,
-      CADASTRAL_BBOX_SPLIT_DEPTH,
-      reporter,
-    );
+      return fetchParcelsForAnchorChunk(
+        province.name,
+        `${chunkIndex + 1}/${anchorChunks.length}`,
+        anchorChunk,
+        CADASTRAL_BBOX_SPLIT_DEPTH,
+        reporter,
+      );
+    },
+  );
 
+  const chunkResults = await runWithConcurrency(
+    chunkTasks,
+    CADASTRAL_CHUNK_CONCURRENCY,
+  );
+
+  for (const chunkResult of chunkResults) {
     for (const parcel of chunkResult.parcels) {
       parcelMap.set(parcel.id, parcel);
     }
-
     hitPageCap = hitPageCap || chunkResult.hitPageCap;
   }
 
