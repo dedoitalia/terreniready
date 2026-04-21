@@ -32,10 +32,61 @@ const newsreader = Newsreader({
   preload: false,
 });
 
+// Metadata completi per SEO + social: title e description vanno in
+// cima ai risultati, openGraph/twitter alimentano la card quando il
+// link viene condiviso. metadataBase permette a Next di risolvere le
+// URL relative di og:image a path assoluti. robots segue robots.ts.
 export const metadata: Metadata = {
-  title: "TerreniReady",
+  metadataBase: new URL("https://terreniready.onrender.com"),
+  title: {
+    default: "TerreniReady — Mappa dei terreni agricoli in prossimità di fonti emissive",
+    template: "%s · TerreniReady",
+  },
   description:
-    "SaaS territoriale per la ricerca di particelle e terreni prossimi a fonti emissive.",
+    "Strumento open source per individuare particelle catastali e terreni agricoli entro 350 metri da fonti emissive autorizzate (impianti AIA, distributori, officine, centrali, discariche) nelle dieci province toscane. Dati ufficiali ARPAT, MIMIT, OpenStreetMap, Agenzia delle Entrate.",
+  keywords: [
+    "terreni agricoli Toscana",
+    "particelle catastali",
+    "fonti emissive",
+    "AIA Toscana",
+    "AUA Toscana",
+    "Autorizzazione Integrata Ambientale",
+    "prossimita ambientale",
+    "ARPAT",
+    "catasto Agenzia Entrate",
+    "GIS open data",
+  ],
+  authors: [{ name: "Diego Santini" }],
+  category: "environment",
+  openGraph: {
+    type: "website",
+    locale: "it_IT",
+    url: "https://terreniready.onrender.com",
+    siteName: "TerreniReady",
+    title: "TerreniReady — Terreni agricoli e fonti emissive in Toscana",
+    description:
+      "Scansione open di particelle catastali toscane entro 350 m da impianti AIA, distributori, officine, centrali e discariche. Dati ufficiali, uso gratuito.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "TerreniReady — Terreni agricoli in prossimità di fonti emissive",
+    description:
+      "Mappa open di particelle catastali toscane vicine a impianti autorizzati, con dati ARPAT, MIMIT, OSM e catasto.",
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-snippet": -1,
+      "max-image-preview": "large",
+      "max-video-preview": -1,
+    },
+  },
+  alternates: {
+    canonical: "/",
+  },
 };
 
 export const viewport: Viewport = {
