@@ -23,6 +23,7 @@ import type {
   ScanResponse,
   ScanStreamEvent,
   SourceCategoryId,
+  SourceFeature,
   TerrainFeature,
 } from "@/types/scan";
 
@@ -1449,11 +1450,12 @@ export default function TerreniDashboard() {
                             <td colSpan={7} className="px-0 pt-2 pb-4">
                               <TerrainAccordion
                                 terrain={activeTerrain}
+                                source={activeSource}
                                 comuneLabel={terrainComuneLabel(
                                   activeTerrain,
                                   sourceById,
                                 )}
-                                onFocusMap={focusActiveTerrainOnAtlas}
+                                onSelectTerrainId={setActiveTerrainId}
                                 onOpenPolygonPreview={() =>
                                   setIsTerrainPreviewOpen(true)
                                 }
@@ -1705,27 +1707,42 @@ const TerrainRow = memo(function TerrainRow({
 
 // --- Accordion inline --------------------------------------------------
 // Riga "detail" che si espande sotto la riga ledger attiva. Occupa tutta
-// la larghezza della tabella (colSpan=7) e porta dentro le info dossier
-// + azioni (vedi poligono nella mappa, apri modal anteprima, Google
-// Maps). E` deliberatamente priva di interattivita` complessa: tutto lo
-// stato rimane nel TerreniDashboard parent.
+// la larghezza della tabella (colSpan=7) e porta dentro:
+// - la mappa centrata sul poligono (layer Satellite + catasto WMS)
+// - 4 KPI di sintesi
+// - la card fonte emissiva piu vicina
+// - gli step successivi operativi
+// - i CTA fullscreen e Google Maps
+// Tutto dentro una sola "finestra" senza piu navigare tra pannelli.
 
 type TerrainAccordionProps = {
   terrain: TerrainFeature;
+  source: SourceFeature | undefined;
   comuneLabel: string;
-  onFocusMap: () => void;
+  onSelectTerrainId: (terrainId: string) => void;
   onOpenPolygonPreview: () => void;
   onClose: () => void;
 };
 
 function TerrainAccordion({
   terrain,
+  source,
   comuneLabel,
-  onFocusMap,
+  onSelectTerrainId,
   onOpenPolygonPreview,
   onClose,
 }: TerrainAccordionProps) {
   const category = SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId];
+  // Memo: la mappa e` dynamic-imported con ssr:false, quindi il rimount
+  // tra accordion diversi e` rapido; evitiamo comunque di ricreare gli
+  // array prop ad ogni render del parent (i re-render altrimenti
+  // invalidano il memo di <TerrainPolygon> / <SourceCircle>).
+  const mapTerrains = useMemo(() => [terrain], [terrain]);
+  const mapSources = useMemo(() => (source ? [source] : []), [source]);
+  const mapProvinces = useMemo(
+    () => [terrain.provinceId] as ProvinceId[],
+    [terrain.provinceId],
+  );
 
   return (
     <div className="terrain-accordion-panel relative rounded-[28px] border border-[rgba(27,43,30,0.12)] bg-[linear-gradient(180deg,#0f1b14,#1a2c1f)] p-5 text-[#e4ece0] shadow-[0_20px_60px_rgba(11,20,13,0.28)] lg:p-6">
@@ -1761,34 +1778,49 @@ function TerrainAccordion({
         />
       </div>
 
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <div className="terrain-dossier-card p-5">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-            Fonte più vicina
-          </div>
-          <div className="mt-2 text-lg font-semibold text-white">
-            {terrain.closestSourceName}
-          </div>
-          <div className="mt-1 text-sm text-[#c5d4c3]">{category.label}</div>
-          <div className="mt-3 text-xs uppercase tracking-[0.18em] text-[#98ae96]">
-            Coordinate centroide
-          </div>
-          <div className="mt-1 font-mono text-sm leading-6 text-[#edf3e9]">
-            {terrain.center.lat.toFixed(6)}, {terrain.center.lng.toFixed(6)}
-          </div>
-          <div className="mt-2 text-xs leading-5 text-[#b7c7b4]">
-            Provider: {terrain.providerLabel}
-          </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        {/* Mappa embedded: un solo terreno + la sua fonte, centrata
+            automaticamente dal FitToContent di TerrainMap. L'altezza fissa
+            evita layout shift quando i chunk leaflet finiscono di montare. */}
+        <div className="terrain-accordion-map overflow-hidden rounded-[24px] border border-white/10 bg-[#0e1711]">
+          <TerrainMap
+            selectedProvinceIds={mapProvinces}
+            sources={mapSources}
+            terrains={mapTerrains}
+            activeTerrainId={terrain.id}
+            onSelectTerrainId={onSelectTerrainId}
+          />
         </div>
 
-        <div className="terrain-dossier-card bg-[#111b14] p-5">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
-            Step successivi
+        <div className="space-y-3">
+          <div className="terrain-dossier-card p-5">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+              Fonte più vicina
+            </div>
+            <div className="mt-2 text-lg font-semibold text-white">
+              {terrain.closestSourceName}
+            </div>
+            <div className="mt-1 text-sm text-[#c5d4c3]">{category.label}</div>
+            <div className="mt-3 text-xs uppercase tracking-[0.18em] text-[#98ae96]">
+              Coordinate centroide
+            </div>
+            <div className="mt-1 font-mono text-sm leading-6 text-[#edf3e9]">
+              {terrain.center.lat.toFixed(6)}, {terrain.center.lng.toFixed(6)}
+            </div>
+            <div className="mt-2 text-xs leading-5 text-[#b7c7b4]">
+              Provider: {terrain.providerLabel}
+            </div>
           </div>
-          <div className="mt-3 space-y-2 text-sm leading-6 text-[#d3dfd1]">
-            <p>1. Verifica particella sul layer catastale ufficiale.</p>
-            <p>2. Avvia visura o convenzione per proprietario e titolarità.</p>
-            <p>3. Integra urbanistica e readiness nella shortlist finale.</p>
+
+          <div className="terrain-dossier-card bg-[#111b14] p-5">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-[#98ae96]">
+              Step successivi
+            </div>
+            <div className="mt-3 space-y-2 text-sm leading-6 text-[#d3dfd1]">
+              <p>1. Verifica particella sul layer catastale ufficiale.</p>
+              <p>2. Avvia visura o convenzione per proprietario e titolarità.</p>
+              <p>3. Integra urbanistica e readiness nella shortlist finale.</p>
+            </div>
           </div>
         </div>
       </div>
@@ -1796,17 +1828,10 @@ function TerrainAccordion({
       <div className="mt-5 flex flex-wrap gap-3">
         <button
           type="button"
-          onClick={onFocusMap}
+          onClick={onOpenPolygonPreview}
           className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.12)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.18)]"
         >
-          Vedi poligono nella mappa
-        </button>
-        <button
-          type="button"
-          onClick={onOpenPolygonPreview}
-          className="inline-flex rounded-full border border-[rgba(243,227,142,0.28)] bg-[rgba(243,227,142,0.08)] px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-[#f3e38e] transition hover:bg-[rgba(243,227,142,0.14)]"
-        >
-          Anteprima poligono a tutto schermo
+          Apri mappa a tutto schermo
         </button>
         <a
           href={terrainMapUrl(terrain)}
@@ -1814,7 +1839,7 @@ function TerrainAccordion({
           rel="noreferrer"
           className="inline-flex items-center rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs font-medium uppercase tracking-[0.18em] text-white transition hover:bg-white/10"
         >
-          Apri centroide in Google Maps
+          Apri in Google Maps
         </a>
       </div>
     </div>
