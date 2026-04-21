@@ -5,12 +5,18 @@ services:
     plan: free
     region: frankfurt
     autoDeploy: true
-    buildCommand: npm ci && npm run build
+    # npm ci e` piu veloce e deterministico di install; --prefer-offline
+    # riusa la cache di Render tra deploy consecutivi sullo stesso slug.
+    buildCommand: npm ci --prefer-offline --no-audit --fund=false && npm run build
     startCommand: npm start
     healthCheckPath: /
     envVars:
       - key: NODE_VERSION
         value: 22.22.0
+      # In produzione NODE_ENV e` gia production, ma forziamo NEXT_TELEMETRY_DISABLED
+      # per evitare chiamate outbound inutili durante il build (utile sui free plan).
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
       # Perf knobs opzionali: tunabili da dashboard Render senza rebuild.
       # Decommentare per override.
       # - key: TERRENI_MAX_PRE_FILTER

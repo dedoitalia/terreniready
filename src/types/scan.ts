@@ -130,6 +130,10 @@ export type ScanStreamEvent =
       result: ScanResponse;
     }
   | {
+      type: "partial-result";
+      result: ScanResponse;
+    }
+  | {
       type: "scan-error";
       message: string;
     }

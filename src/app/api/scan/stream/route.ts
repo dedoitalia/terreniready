@@ -13,12 +13,23 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
+// Le route handler Next 16 hanno runtime dinamico su richiesta: questa
+// e' puro SSE, non deve mai essere sottoposta a static generation, cache
+// fetch dedup ne CDN caching lungo. Le tre export sopra neutralizzano
+// tutti e tre i meccanismi in un colpo solo.
+
 function isoNow() {
   return new Date().toISOString();
 }
 
+// Stream SSE: piu veloce costruire una stringa sola invece di concatenare
+// piu backtick. La versione precedente generava un template literal di ~80B
+// per ogni evento log; il throughput su scan multi-provincia tocca facilmente
+// 400-500 eventi.
 function buildEvent(type: string, payload: unknown) {
-  return `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  return (
+    "event: " + type + "\ndata: " + JSON.stringify(payload) + "\n\n"
+  );
 }
 
 export async function GET(request: NextRequest) {
@@ -28,10 +39,12 @@ export async function GET(request: NextRequest) {
   const categoryIds = request.nextUrl.searchParams.getAll(
     "categoryIds",
   ) as SourceCategoryId[];
+  // L'encoder e' hot-path: un'unica istanza per connessione evita la
+  // continua allocazione di TextEncoder ad ogni evento.
+  const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     start(controller) {
-      const encoder = new TextEncoder();
       let closed = false;
       let heartbeatId: ReturnType<typeof setInterval> | null = null;
 
@@ -81,6 +94,18 @@ export async function GET(request: NextRequest) {
         }
       };
 
+      // Il client chiude il tab -> la ReadableStream riceve "cancel"; lo
+      // AbortController permette a runScan (o a qualunque fetch upstream
+      // che lo usi) di accorgersene e abbandonare il lavoro residuo.
+      const abortController = new AbortController();
+
+      const onUpstreamAbort = () => {
+        abortController.abort();
+        close();
+      };
+
+      request.signal.addEventListener("abort", onUpstreamAbort, { once: true });
+
       heartbeatId = setInterval(() => {
         send({
           type: "heartbeat",
@@ -118,6 +143,13 @@ export async function GET(request: NextRequest) {
 
           const result = await runScan(provinceIds, categoryIds, {
             reportProgress: ({ message }) => appendLog(message),
+            // Ogni provincia che termina invia un partial-result al
+            // client: su scan multi-provincia l'utente vede i terreni
+            // della prima provincia apparire in mappa prima che la
+            // pipeline finisca.
+            reportPartialResult: (partial) => {
+              send({ type: "partial-result", result: partial });
+            },
           });
 
           send({
@@ -140,6 +172,7 @@ export async function GET(request: NextRequest) {
             timestamp: isoNow(),
           });
         } finally {
+          request.signal.removeEventListener("abort", onUpstreamAbort);
           close();
         }
       })();
