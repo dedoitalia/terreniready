@@ -138,9 +138,23 @@ function parsePositiveIntegerEnvCadastral(key: string, fallback: number) {
 // Launcher parallelo con limite di concorrenza. Preserva l'ordine dei
 // risultati (results[i] corrisponde a tasks[i]). Ogni worker tira la
 // prossima task disponibile appena finisce la precedente.
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException(
+          typeof signal.reason === "string"
+            ? signal.reason
+            : "Scansione catastale annullata dal client.",
+          "AbortError",
+        );
+  }
+}
+
 async function runWithConcurrency<T>(
   tasks: Array<() => Promise<T>>,
   concurrency: number,
+  signal?: AbortSignal,
 ): Promise<T[]> {
   if (tasks.length === 0) return [];
   const results: T[] = new Array(tasks.length);
@@ -148,6 +162,7 @@ async function runWithConcurrency<T>(
 
   const worker = async () => {
     while (true) {
+      throwIfAborted(signal);
       const index = nextIndex++;
       if (index >= tasks.length) return;
       results[index] = await tasks[index]();
@@ -990,7 +1005,9 @@ export async function fetchCadastralTerrainsNearSources(
   provinceId: ProvinceId,
   sources: SourceFeature[],
   reporter?: ProgressReporter,
+  signal?: AbortSignal,
 ) {
+  throwIfAborted(signal);
   if (sources.length === 0) {
     return {
       terrains: [] as TerrainFeature[],
@@ -1042,6 +1059,7 @@ export async function fetchCadastralTerrainsNearSources(
   const chunkResults = await runWithConcurrency(
     chunkTasks,
     CADASTRAL_CHUNK_CONCURRENCY,
+    signal,
   );
 
   for (const chunkResult of chunkResults) {
