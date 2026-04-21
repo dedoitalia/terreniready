@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { memo, useEffect, useMemo } from "react";
 import {
   Circle,
   LayersControl,
@@ -11,6 +11,12 @@ import {
   WMSTileLayer,
   useMap,
 } from "react-leaflet";
+
+// Il CSS di Leaflet vive qui dentro e non nel layout: il MapContainer
+// e` dynamic-imported con ssr:false da TerreniDashboard, quindi Next
+// splitta anche lo stylesheet e l'iniziale non paga 13 KB di regole CSS
+// inutili finche' l'utente non chiede davvero la mappa.
+import "leaflet/dist/leaflet.css";
 
 import { PROVINCE_MAP } from "@/lib/province-data";
 import { SOURCE_CATEGORY_MAP, landuseLabel } from "@/lib/source-types";
@@ -24,6 +30,11 @@ type TerrainMapProps = {
   onSelectTerrainId: (terrainId: string) => void;
 };
 
+const DEFAULT_BOUNDS: [[number, number], [number, number]] = [
+  [43.58, 10.12],
+  [44.12, 11.45],
+];
+
 function FitToContent({
   selectedProvinceIds,
   sources,
@@ -32,14 +43,14 @@ function FitToContent({
   const map = useMap();
 
   useEffect(() => {
-    const bounds = [
-      ...sources.map(
-        (source) => [source.latitude, source.longitude] as [number, number],
-      ),
-      ...terrains.map(
-        (terrain) => [terrain.center.lat, terrain.center.lng] as [number, number],
-      ),
-    ];
+    const bounds: Array<[number, number]> = [];
+
+    for (const source of sources) {
+      bounds.push([source.latitude, source.longitude]);
+    }
+    for (const terrain of terrains) {
+      bounds.push([terrain.center.lat, terrain.center.lng]);
+    }
 
     if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [48, 48] });
@@ -73,9 +84,11 @@ function FocusActiveTerrain({
       return;
     }
 
-    const polygonBounds = activeTerrain.coordinates.map(
-      ([lng, lat]) => [lat, lng] as [number, number],
-    );
+    const polygonBounds: Array<[number, number]> = [];
+
+    for (const [lng, lat] of activeTerrain.coordinates) {
+      polygonBounds.push([lat, lng]);
+    }
 
     if (polygonBounds.length >= 3) {
       map.fitBounds(polygonBounds, {
@@ -93,6 +106,98 @@ function FocusActiveTerrain({
   return null;
 }
 
+// Le singole celle (cerchi fonte, poligoni terreno) sono memoizzate: il
+// react-leaflet ri-renderizza ad ogni cambio di activeTerrainId e con 200
+// poligoni il costo di diff e` tangibile, mentre il contenuto per id e`
+// identico finche' dati grezzi e categoria non cambiano.
+const SourceCircle = memo(function SourceCircle({
+  source,
+}: {
+  source: SourceFeature;
+}) {
+  const category = SOURCE_CATEGORY_MAP[source.primaryCategoryId];
+
+  return (
+    <Circle
+      center={[source.latitude, source.longitude]}
+      radius={350}
+      pathOptions={{
+        color: category.color,
+        fillColor: category.color,
+        fillOpacity: 0.08,
+        weight: 1.5,
+      }}
+    >
+      <Popup>
+        <div className="space-y-2 text-sm">
+          <p className="font-semibold">{source.name}</p>
+          <p>{category.label}</p>
+          <p className="text-[var(--muted)]">{source.providerLabel}</p>
+          {source.address ? <p>{source.address}</p> : null}
+          {source.referenceUrl ? (
+            <a
+              href={source.referenceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex text-xs font-medium text-[var(--accent-ink)] underline underline-offset-2"
+            >
+              Apri sorgente dati
+            </a>
+          ) : null}
+        </div>
+      </Popup>
+    </Circle>
+  );
+});
+
+type TerrainPolygonProps = {
+  terrain: TerrainFeature;
+  active: boolean;
+  onSelect: (terrainId: string) => void;
+};
+
+const TerrainPolygon = memo(function TerrainPolygon({
+  terrain,
+  active,
+  onSelect,
+}: TerrainPolygonProps) {
+  const category = SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId];
+  // positions riuso stabile sul terreno: i coords non cambiano dopo lo
+  // scan, quindi useMemo evita la trasformazione ad ogni render leaflet.
+  const positions = useMemo<Array<[number, number]>>(
+    () => terrain.coordinates.map(([lng, lat]) => [lat, lng]),
+    [terrain.coordinates],
+  );
+
+  return (
+    <Polygon
+      positions={positions}
+      eventHandlers={{
+        click: () => onSelect(terrain.id),
+      }}
+      pathOptions={{
+        color: active ? "#112117" : category.color,
+        fillColor: active ? "#d9e26a" : "#7fb277",
+        fillOpacity: active ? 0.62 : 0.34,
+        weight: active ? 3 : 1.4,
+      }}
+    >
+      <Popup>
+        <div className="space-y-2 text-sm">
+          <p className="font-semibold">{terrain.name}</p>
+          <p>{landuseLabel(terrain.landuse)}</p>
+          <p>{Math.round(terrain.distanceMeters)} m dalla fonte più vicina</p>
+          {terrain.areaSqm ? (
+            <p>{terrain.areaSqm.toLocaleString("it-IT")} m² stimati</p>
+          ) : null}
+          <p>Fonte: {terrain.closestSourceName}</p>
+          <p className="text-[var(--muted)]">{terrain.providerLabel}</p>
+        </div>
+      </Popup>
+    </Polygon>
+  );
+});
+
 export default function TerrainMap({
   selectedProvinceIds,
   sources,
@@ -100,18 +205,24 @@ export default function TerrainMap({
   activeTerrainId,
   onSelectTerrainId,
 }: TerrainMapProps) {
-  const activeTerrain = terrains.find((terrain) => terrain.id === activeTerrainId);
+  const activeTerrain = useMemo(
+    () => terrains.find((terrain) => terrain.id === activeTerrainId),
+    [terrains, activeTerrainId],
+  );
+
+  const provinceLabel = useMemo(() => {
+    if (selectedProvinceIds.length === 0) {
+      return "Toscana";
+    }
+
+    return selectedProvinceIds
+      .map((provinceId) => PROVINCE_MAP[provinceId].name)
+      .join(" · ");
+  }, [selectedProvinceIds]);
 
   return (
     <div className="terrain-map-frame relative h-[64vh] overflow-hidden lg:h-[calc(100vh-14rem)]">
-      <MapContainer
-        bounds={[
-          [43.58, 10.12],
-          [44.12, 11.45],
-        ]}
-        scrollWheelZoom
-        className="h-full w-full"
-      >
+      <MapContainer bounds={DEFAULT_BOUNDS} scrollWheelZoom className="h-full w-full">
         <LayersControl position="topright">
           <LayersControl.BaseLayer checked name="Satellite">
             <TileLayer
@@ -144,87 +255,25 @@ export default function TerrainMap({
         />
         <FocusActiveTerrain activeTerrain={activeTerrain} />
 
-        {sources.map((source) => {
-          const category = SOURCE_CATEGORY_MAP[source.primaryCategoryId];
+        {sources.map((source) => (
+          <SourceCircle key={source.id} source={source} />
+        ))}
 
-          return (
-            <Circle
-              key={source.id}
-              center={[source.latitude, source.longitude]}
-              radius={350}
-              pathOptions={{
-                color: category.color,
-                fillColor: category.color,
-                fillOpacity: 0.08,
-                weight: 1.5,
-              }}
-            >
-              <Popup>
-                <div className="space-y-2 text-sm">
-                  <p className="font-semibold">{source.name}</p>
-                  <p>{category.label}</p>
-                  <p className="text-[var(--muted)]">{source.providerLabel}</p>
-                  {source.address ? <p>{source.address}</p> : null}
-                  {source.referenceUrl ? (
-                    <a
-                      href={source.referenceUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex text-xs font-medium text-[var(--accent-ink)] underline underline-offset-2"
-                    >
-                      Apri sorgente dati
-                    </a>
-                  ) : null}
-                </div>
-              </Popup>
-            </Circle>
-          );
-        })}
-
-        {terrains.map((terrain) => {
-          const active = terrain.id === activeTerrainId;
-          const category = SOURCE_CATEGORY_MAP[terrain.closestSourceCategoryId];
-
-          return (
-            <Polygon
-              key={terrain.id}
-              positions={terrain.coordinates.map(([lng, lat]) => [lat, lng])}
-              eventHandlers={{
-                click: () => onSelectTerrainId(terrain.id),
-              }}
-              pathOptions={{
-                color: active ? "#112117" : category.color,
-                fillColor: active ? "#d9e26a" : "#7fb277",
-                fillOpacity: active ? 0.62 : 0.34,
-                weight: active ? 3 : 1.4,
-              }}
-            >
-              <Popup>
-                <div className="space-y-2 text-sm">
-                  <p className="font-semibold">{terrain.name}</p>
-                  <p>{landuseLabel(terrain.landuse)}</p>
-                  <p>{Math.round(terrain.distanceMeters)} m dalla fonte più vicina</p>
-                  {terrain.areaSqm ? (
-                    <p>{terrain.areaSqm.toLocaleString("it-IT")} m² stimati</p>
-                  ) : null}
-                  <p>Fonte: {terrain.closestSourceName}</p>
-                  <p className="text-[var(--muted)]">{terrain.providerLabel}</p>
-                </div>
-              </Popup>
-            </Polygon>
-          );
-        })}
+        {terrains.map((terrain) => (
+          <TerrainPolygon
+            key={terrain.id}
+            terrain={terrain}
+            active={terrain.id === activeTerrainId}
+            onSelect={onSelectTerrainId}
+          />
+        ))}
       </MapContainer>
 
       <div className="terrain-map-overlay pointer-events-none absolute left-4 top-4 max-w-sm px-4 py-3">
         <div className="text-[11px] uppercase tracking-[0.2em] text-[#b8c6b1]">
           Stage mappa
         </div>
-        <div className="mt-2 text-sm leading-6 text-[#eef4eb]">
-          {selectedProvinceIds.length > 0
-            ? selectedProvinceIds.map((provinceId) => PROVINCE_MAP[provinceId].name).join(" · ")
-            : "Toscana"}
-        </div>
+        <div className="mt-2 text-sm leading-6 text-[#eef4eb]">{provinceLabel}</div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-[#d2ddcf]">
           <div className="terrain-map-overlay-stat px-3 py-2">
             <div className="uppercase tracking-[0.18em] text-[#a5b69d]">Fonti</div>
