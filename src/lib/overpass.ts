@@ -33,11 +33,32 @@ const OVERPASS_ENDPOINTS = [
 
 const SEARCH_RADIUS_METERS = 350;
 const MAX_TERRAINS = 250;
+// Cap duro pre-filtro: su provincia grande (Firenze, Siena) il WFS catastale
+// puo restituire >1000 particelle candidate. Filtrarle tutte con query
+// Overpass e operazioni Turf costa minuti. Prendiamo solo le piu vicine alla
+// fonte e lasciamo che il filtro anti-urbano lavori su un set ridotto.
+//
+// Tunabile via env TERRENI_MAX_PRE_FILTER senza rebuild (Render free usa le
+// env vars del servizio).
+const MAX_TERRAINS_PRE_FILTER = parsePositiveIntegerEnv(
+  "TERRENI_MAX_PRE_FILTER",
+  140,
+);
 const TERRAIN_FILTER_BATCH_SIZE = 120;
 const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
+// Timeout aggressivo per il filtro anti-urbano: se Overpass non risponde in
+// 15s rinunciamo a filtrare quel batch e lasciamo passare le particelle con
+// un warning. Meglio mostrare qualche risultato in piu rispetto a bloccare
+// tutta la pipeline per un provider lento.
+//
+// Tunabile via env TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS.
+const OBSTACLE_FILTER_SOFT_TIMEOUT_MS = parsePositiveIntegerEnv(
+  "TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS",
+  15 * 1000,
+);
 const OVERPASS_MAX_CYCLES = 2;
 const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
 const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
@@ -154,6 +175,22 @@ class OverpassRateLimitError extends Error {
     super(message);
     this.name = "OverpassRateLimitError";
   }
+}
+
+function parsePositiveIntegerEnv(key: string, fallback: number) {
+  const raw = process.env[key];
+
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
 }
 
 const overpassCache = getGlobalStore<Map<string, CachedOverpassValue>>(
@@ -572,27 +609,30 @@ async function fetchSourcesForProvince(
   reporter?: ProgressReporter,
 ): Promise<SourceFeature[]> {
   const province = PROVINCE_MAP[provinceId];
-  const sources: SourceFeature[] = [];
+  const wantFuel = categoryIds.includes("fuel");
+  const overpassCategoryIds = categoryIds.filter(
+    (categoryId) => categoryId !== "fuel",
+  );
 
-  if (categoryIds.includes("fuel")) {
-    sources.push(
-      ...(await fetchFuelSourcesFromMimit(provinceId, (message) => {
-        reportProgress(reporter, message);
-      })),
-    );
-  }
+  // Fuel (MIMIT CSV nazionale) e Overpass sono provider indipendenti:
+  // lanciarli in parallelo nasconde i 5-15s del download MIMIT cold dietro
+  // la query Overpass, senza aumentare la pressione su un singolo endpoint.
+  const [fuelSources, overpassSources] = await Promise.all([
+    wantFuel
+      ? fetchFuelSourcesFromMimit(provinceId, (message) => {
+          reportProgress(reporter, message);
+        })
+      : Promise.resolve<SourceFeature[]>([]),
+    overpassCategoryIds.length > 0
+      ? fetchOverpassSourcesForProvince(
+          provinceId,
+          overpassCategoryIds,
+          reporter,
+        )
+      : Promise.resolve<SourceFeature[]>([]),
+  ]);
 
-  const overpassCategoryIds = categoryIds.filter((categoryId) => categoryId !== "fuel");
-
-  if (overpassCategoryIds.length > 0) {
-    sources.push(
-      ...(await fetchOverpassSourcesForProvince(
-        provinceId,
-        overpassCategoryIds,
-        reporter,
-      )),
-    );
-  }
+  const sources = [...fuelSources, ...overpassSources];
 
   reportProgress(
     reporter,
@@ -950,92 +990,111 @@ ${buildAroundStatementsForTerrainAnchors(ROAD_SELECTORS, anchorChunk)}
 out geom;
 `;
 
-  try {
-    const data = await fetchOverpass(
-      query,
-      reporter,
-      `${provinceName} filtri blocco ${blockLabel}`,
-    );
-    const buildingMap = new Map<string, PreparedPolygonObstacle>();
-    const urbanAreaMap = new Map<string, PreparedPolygonObstacle>();
-    const roadMap = new Map<string, PreparedLineObstacle>();
+  // Soft timeout: se il filtro anti-urbano non risponde entro
+  // OBSTACLE_FILTER_SOFT_TIMEOUT_MS restituiamo un warning e lasciamo
+  // passare il batch senza filtrare. Meglio risultati imperfetti in pochi
+  // secondi che risultati perfetti in 5 minuti.
+  const softTimeoutPromise = new Promise<TerrainObstacleChunkResult>((resolve) => {
+    setTimeout(() => {
+      resolve(
+        createEmptyTerrainObstacleChunkResult(
+          `${provinceName}: filtro anti-urbano blocco ${blockLabel} saltato per timeout soft ${Math.round(OBSTACLE_FILTER_SOFT_TIMEOUT_MS / 1000)}s.`,
+        ),
+      );
+    }, OBSTACLE_FILTER_SOFT_TIMEOUT_MS);
+  });
 
-    for (const element of data.elements) {
-      if (element.type !== "way") {
-        continue;
-      }
-
-      const tags = element.tags ?? {};
-      const normalizedLanduse = tags.landuse?.trim().toLowerCase();
-      const normalizedHighway = tags.highway?.trim().toLowerCase();
-
-      if (tags.building) {
-        const prepared = preparePolygonObstacle(element);
-
-        if (prepared) {
-          buildingMap.set(prepared.id, prepared);
-        }
-      }
-
-      if (normalizedLanduse && EXCLUDED_URBAN_LANDUSES.has(normalizedLanduse)) {
-        const prepared = preparePolygonObstacle(element);
-
-        if (prepared) {
-          urbanAreaMap.set(prepared.id, prepared);
-        }
-      }
-
-      if (normalizedHighway) {
-        const prepared = prepareLineObstacle(element);
-
-        if (prepared) {
-          roadMap.set(prepared.id, prepared);
-        }
-      }
-    }
-
-    return {
-      buildings: Array.from(buildingMap.values()),
-      urbanAreas: Array.from(urbanAreaMap.values()),
-      roads: Array.from(roadMap.values()),
-      warning: null,
-      warningTriggered: false,
-    };
-  } catch (error) {
-    const recoverable = error instanceof OverpassRateLimitError || isRecoverableOverpassError(error);
-
-    if (recoverable && remainingSplits > 0 && anchorChunk.length > 1) {
-      reportProgress(
+  const fetchPromise = (async (): Promise<TerrainObstacleChunkResult> => {
+    try {
+      const data = await fetchOverpass(
+        query,
         reporter,
-        `${provinceName}: blocco filtri ${blockLabel} troppo pesante per i provider live, lo divido in sottoblocchi.`,
+        `${provinceName} filtri blocco ${blockLabel}`,
       );
+      const buildingMap = new Map<string, PreparedPolygonObstacle>();
+      const urbanAreaMap = new Map<string, PreparedPolygonObstacle>();
+      const roadMap = new Map<string, PreparedLineObstacle>();
 
-      const [leftChunk, rightChunk] = splitTerrainObstacleAnchorChunk(anchorChunk);
-      const branchResults = await Promise.all(
-        [leftChunk, rightChunk]
-          .filter((chunk) => chunk.length > 0)
-          .map((chunk, index) =>
-            fetchTerrainObstaclesForChunk(
-              provinceName,
-              `${blockLabel}.${index === 0 ? "a" : "b"}`,
-              chunk,
-              reporter,
-              remainingSplits - 1,
+      for (const element of data.elements) {
+        if (element.type !== "way") {
+          continue;
+        }
+
+        const tags = element.tags ?? {};
+        const normalizedLanduse = tags.landuse?.trim().toLowerCase();
+        const normalizedHighway = tags.highway?.trim().toLowerCase();
+
+        if (tags.building) {
+          const prepared = preparePolygonObstacle(element);
+
+          if (prepared) {
+            buildingMap.set(prepared.id, prepared);
+          }
+        }
+
+        if (normalizedLanduse && EXCLUDED_URBAN_LANDUSES.has(normalizedLanduse)) {
+          const prepared = preparePolygonObstacle(element);
+
+          if (prepared) {
+            urbanAreaMap.set(prepared.id, prepared);
+          }
+        }
+
+        if (normalizedHighway) {
+          const prepared = prepareLineObstacle(element);
+
+          if (prepared) {
+            roadMap.set(prepared.id, prepared);
+          }
+        }
+      }
+
+      return {
+        buildings: Array.from(buildingMap.values()),
+        urbanAreas: Array.from(urbanAreaMap.values()),
+        roads: Array.from(roadMap.values()),
+        warning: null,
+        warningTriggered: false,
+      };
+    } catch (error) {
+      const recoverable =
+        error instanceof OverpassRateLimitError || isRecoverableOverpassError(error);
+
+      if (recoverable && remainingSplits > 0 && anchorChunk.length > 1) {
+        reportProgress(
+          reporter,
+          `${provinceName}: blocco filtri ${blockLabel} troppo pesante per i provider live, lo divido in sottoblocchi.`,
+        );
+
+        const [leftChunk, rightChunk] = splitTerrainObstacleAnchorChunk(anchorChunk);
+        const branchResults = await Promise.all(
+          [leftChunk, rightChunk]
+            .filter((chunk) => chunk.length > 0)
+            .map((chunk, index) =>
+              fetchTerrainObstaclesForChunk(
+                provinceName,
+                `${blockLabel}.${index === 0 ? "a" : "b"}`,
+                chunk,
+                reporter,
+                remainingSplits - 1,
+              ),
             ),
-          ),
-      );
+        );
 
-      return mergeTerrainObstacleChunkResults(branchResults);
+        return mergeTerrainObstacleChunkResults(branchResults);
+      }
+
+      if (recoverable) {
+        const warning = `${provinceName}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${blockLabel}.`;
+        reportProgress(reporter, warning);
+        return createEmptyTerrainObstacleChunkResult(warning);
+      }
+
+      throw error;
     }
+  })();
 
-    if (recoverable) {
-      const warning = `${provinceName}: filtro anti-urbano completato parzialmente per rate limit Overpass al blocco ${blockLabel}.`;
-      reportProgress(reporter, warning);
-      return createEmptyTerrainObstacleChunkResult(warning);
-    }
-
-    throw error;
-  }
+  return Promise.race([fetchPromise, softTimeoutPromise]);
 }
 
 async function fetchTerrainObstaclesForProvince(
@@ -1274,9 +1333,18 @@ async function scanProvince(
           warning: null as string | null,
         }
       : await fetchCadastralTerrainsNearSources(provinceId, sources, reporter);
-  const terrainCandidates = terrainLookup.terrains.sort(
+  const sortedCandidates = terrainLookup.terrains.sort(
     (left, right) => left.distanceMeters - right.distanceMeters,
   );
+  const terrainCandidates = sortedCandidates.slice(0, MAX_TERRAINS_PRE_FILTER);
+
+  if (sortedCandidates.length > MAX_TERRAINS_PRE_FILTER) {
+    reportProgress(
+      reporter,
+      `${province.name}: pre-filtro ridotto a ${MAX_TERRAINS_PRE_FILTER} particelle piu vicine su ${sortedCandidates.length} disponibili per velocizzare il filtro anti-urbano.`,
+    );
+  }
+
   const terrainCandidateBatches = chunkArray(
     terrainCandidates,
     TERRAIN_FILTER_BATCH_SIZE,
