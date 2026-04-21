@@ -1,5 +1,6 @@
 import {
   area,
+  booleanPointInPolygon,
   centerOfMass,
   distance,
   point,
@@ -25,6 +26,11 @@ const CADASTRAL_BBOX_SPLIT_DEPTH = 3;
 const CADASTRAL_WFS_PAGE_SIZE = 200;
 const CADASTRAL_WFS_MAX_PAGES = 6;
 const CADASTRAL_WFS_CACHE_TTL_MS = 45 * 60 * 1000;
+const MIN_PARCEL_AREA_SQM = 250;
+const TECHNICAL_PARCEL_MIN_SPAN_METERS = 12;
+const TECHNICAL_PARCEL_ASPECT_RATIO = 8;
+const TECHNICAL_PARCEL_MIN_FILL_RATIO = 0.16;
+const TECHNICAL_PARCEL_MIN_COMPACTNESS = 0.06;
 
 type ProgressReporter = (event: ScanProgressEvent) => void;
 
@@ -57,6 +63,30 @@ type CachedWfsValue = {
     parcels: CadastralParcelFeature[];
     nextUrl: string | null;
   };
+};
+
+type TerrainResolution =
+  | {
+      terrain: TerrainFeature;
+      rejectReason: null;
+    }
+  | {
+      terrain: null;
+      rejectReason:
+        | "outside-buffer"
+        | "contains-source"
+        | "technical-shape"
+        | "invalid-geometry";
+    };
+
+type ParcelShapeMetrics = {
+  areaSqm: number;
+  minSpanMeters: number;
+  maxSpanMeters: number;
+  aspectRatio: number;
+  fillRatio: number;
+  compactness: number;
+  technical: boolean;
 };
 
 function getGlobalStore<T>(key: string, init: () => T) {
@@ -718,24 +748,96 @@ function sourceCandidatePrefilter(
   );
 }
 
+function polygonPerimeterMeters(coords: Array<[number, number]>) {
+  let perimeter = 0;
+
+  for (let index = 0; index < coords.length - 1; index += 1) {
+    perimeter += distance(point(coords[index]), point(coords[index + 1]), {
+      units: "meters",
+    });
+  }
+
+  return perimeter;
+}
+
+function parcelShapeMetrics(
+  coords: Array<[number, number]>,
+  areaSqm: number,
+  minLat: number,
+  minLng: number,
+  maxLat: number,
+  maxLng: number,
+) {
+  const midLat = (minLat + maxLat) / 2;
+  const midLng = (minLng + maxLng) / 2;
+  const bboxWidthMeters = distance(point([minLng, midLat]), point([maxLng, midLat]), {
+    units: "meters",
+  });
+  const bboxHeightMeters = distance(point([midLng, minLat]), point([midLng, maxLat]), {
+    units: "meters",
+  });
+  const minSpanMeters = Math.max(0.5, Math.min(bboxWidthMeters, bboxHeightMeters));
+  const maxSpanMeters = Math.max(bboxWidthMeters, bboxHeightMeters);
+  const aspectRatio = maxSpanMeters / minSpanMeters;
+  const bboxAreaSqm = Math.max(1, bboxWidthMeters * bboxHeightMeters);
+  const fillRatio = areaSqm / bboxAreaSqm;
+  const perimeterMeters = Math.max(1, polygonPerimeterMeters(coords));
+  const compactness = (4 * Math.PI * areaSqm) / (perimeterMeters * perimeterMeters);
+  const technical =
+    areaSqm < MIN_PARCEL_AREA_SQM ||
+    (minSpanMeters < TECHNICAL_PARCEL_MIN_SPAN_METERS &&
+      aspectRatio >= TECHNICAL_PARCEL_ASPECT_RATIO) ||
+    (fillRatio < TECHNICAL_PARCEL_MIN_FILL_RATIO &&
+      compactness < TECHNICAL_PARCEL_MIN_COMPACTNESS) ||
+    (minSpanMeters < 8 && maxSpanMeters > 60) ||
+    (compactness < 0.03 && aspectRatio > 5.5);
+
+  return {
+    areaSqm,
+    minSpanMeters,
+    maxSpanMeters,
+    aspectRatio,
+    fillRatio,
+    compactness,
+    technical,
+  } satisfies ParcelShapeMetrics;
+}
+
 function computeTerrainFromParcel(
   provinceId: ProvinceId,
   parcel: CadastralParcelFeature,
   sources: SourceFeature[],
-): TerrainFeature | null {
+): TerrainResolution {
   try {
     const poly = polygon([parcel.coordinates]);
     const centroid = centerOfMass(poly).geometry.coordinates;
+    const areaSqm = Math.round(area(poly));
     const lats = parcel.coordinates.map((coordinate) => coordinate[1]);
     const lngs = parcel.coordinates.map((coordinate) => coordinate[0]);
     const minLat = Math.min(...lats);
     const maxLat = Math.max(...lats);
     const minLng = Math.min(...lngs);
     const maxLng = Math.max(...lngs);
+    const shapeMetrics = parcelShapeMetrics(
+      parcel.coordinates,
+      areaSqm,
+      minLat,
+      minLng,
+      maxLat,
+      maxLng,
+    );
+
+    if (shapeMetrics.technical) {
+      return {
+        terrain: null,
+        rejectReason: "technical-shape",
+      };
+    }
 
     let closestSource: SourceFeature | null = null;
     let closestDistance = Number.POSITIVE_INFINITY;
     let sourceCountInRange = 0;
+    let sourceInsideParcel = false;
 
     for (const source of sources) {
       if (!sourceCandidatePrefilter(source, minLat, minLng, maxLat, maxLng)) {
@@ -743,6 +845,12 @@ function computeTerrainFromParcel(
       }
 
       const sourcePoint = point([source.longitude, source.latitude]);
+
+      if (booleanPointInPolygon(sourcePoint, poly)) {
+        sourceInsideParcel = true;
+        continue;
+      }
+
       const distanceMeters = pointToPolygonDistance(sourcePoint, poly, {
         units: "meters",
       });
@@ -763,42 +871,63 @@ function computeTerrainFromParcel(
       }
     }
 
+    if (sourceInsideParcel) {
+      return {
+        terrain: null,
+        rejectReason: "contains-source",
+      };
+    }
+
     if (!closestSource || closestDistance > SEARCH_RADIUS_METERS) {
-      return null;
+      return {
+        terrain: null,
+        rejectReason: "outside-buffer",
+      };
     }
 
     const foglio = parcelFoglio(parcel.nationalReference);
 
     return {
-      id: `${provinceId}-parcel-${parcel.id}`,
-      osmId: null,
-      osmType: "way",
-      provinceId,
-      name: `Particella ${foglio}/${parcel.label}`,
-      landuse: "cadastral_parcel",
-      center: {
-        lat: centroid[1],
-        lng: centroid[0],
+      terrain: {
+        id: `${provinceId}-parcel-${parcel.id}`,
+        osmId: null,
+        osmType: "way",
+        provinceId,
+        name: `Particella ${foglio}/${parcel.label}`,
+        landuse: "cadastral_parcel",
+        center: {
+          lat: centroid[1],
+          lng: centroid[0],
+        },
+        coordinates: parcel.coordinates,
+        distanceMeters: closestDistance,
+        areaSqm,
+        closestSourceId: closestSource.id,
+        closestSourceName: closestSource.name,
+        closestSourceCategoryId: closestSource.primaryCategoryId,
+        sourceCountInRange,
+        dataProvider: "cadastre",
+        providerLabel: "Agenzia delle Entrate WFS",
+        referenceUrl: null,
+        tags: {
+          administrativeUnit: parcel.administrativeUnit,
+          nationalCadastralReference: parcel.nationalReference,
+          label: parcel.label,
+          foglio,
+          minSpanMeters: Math.round(shapeMetrics.minSpanMeters).toString(),
+          maxSpanMeters: Math.round(shapeMetrics.maxSpanMeters).toString(),
+          aspectRatio: shapeMetrics.aspectRatio.toFixed(2),
+          fillRatio: shapeMetrics.fillRatio.toFixed(2),
+          compactness: shapeMetrics.compactness.toFixed(3),
+        },
       },
-      coordinates: parcel.coordinates,
-      distanceMeters: closestDistance,
-      areaSqm: Math.round(area(poly)),
-      closestSourceId: closestSource.id,
-      closestSourceName: closestSource.name,
-      closestSourceCategoryId: closestSource.primaryCategoryId,
-      sourceCountInRange,
-      dataProvider: "cadastre",
-      providerLabel: "Agenzia delle Entrate WFS",
-      referenceUrl: null,
-      tags: {
-        administrativeUnit: parcel.administrativeUnit,
-        nationalCadastralReference: parcel.nationalReference,
-        label: parcel.label,
-        foglio,
-      },
-    } satisfies TerrainFeature;
+      rejectReason: null,
+    };
   } catch {
-    return null;
+    return {
+      terrain: null,
+      rejectReason: "invalid-geometry",
+    };
   }
 }
 
@@ -819,6 +948,8 @@ export async function fetchCadastralTerrainsNearSources(
   const anchorChunks = chunkArray(anchors, CADASTRAL_ANCHORS_PER_CHUNK);
   const parcelMap = new Map<string, CadastralParcelFeature>();
   let hitPageCap = false;
+  let rejectedTechnicalShape = 0;
+  let rejectedContainingSource = 0;
 
   reportProgress(
     reporter,
@@ -869,8 +1000,29 @@ export async function fetchCadastralTerrainsNearSources(
 
   const terrains = Array.from(parcelMap.values())
     .map((parcel) => computeTerrainFromParcel(provinceId, parcel, sources))
-    .filter((terrain): terrain is TerrainFeature => terrain !== null)
+    .flatMap((result) => {
+      if (result.terrain) {
+        return [result.terrain];
+      }
+
+      if (result.rejectReason === "technical-shape") {
+        rejectedTechnicalShape += 1;
+      }
+
+      if (result.rejectReason === "contains-source") {
+        rejectedContainingSource += 1;
+      }
+
+      return [];
+    })
     .sort((left, right) => left.distanceMeters - right.distanceMeters);
+
+  if (rejectedTechnicalShape > 0 || rejectedContainingSource > 0) {
+    reportProgress(
+      reporter,
+      `${province.name}: filtro preliminare particelle ha scartato ${rejectedTechnicalShape} geometrie troppo strette/tecniche e ${rejectedContainingSource} particelle che contenevano direttamente la fonte emissiva.`,
+    );
+  }
 
   reportProgress(
     reporter,
