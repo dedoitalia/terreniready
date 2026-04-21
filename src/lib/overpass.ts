@@ -7,6 +7,7 @@ import {
   polygon,
 } from "@turf/turf";
 
+import { fetchAiaSourcesFromArpat } from "@/lib/aia-arpat";
 import { fetchCadastralTerrainsNearSources } from "@/lib/cadastral-wfs";
 import { PROVINCE_MAP } from "@/lib/province-data";
 import { fetchFuelSourcesFromMimit } from "@/lib/mimit-fuel";
@@ -49,22 +50,30 @@ const OVERPASS_CACHE_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_ENDPOINT_COOLDOWN_MS = 90 * 1000;
 const ENDPOINT_RETRY_DELAY_MS = 450;
 const OVERPASS_REQUEST_TIMEOUT_MS = 12 * 1000;
-// Timeout aggressivo per il filtro anti-urbano: se Overpass non risponde in
-// 15s rinunciamo a filtrare quel batch e lasciamo passare le particelle con
-// un warning. Meglio mostrare qualche risultato in piu rispetto a bloccare
-// tutta la pipeline per un provider lento.
+// Timeout del filtro anti-urbano: se Overpass non risponde entro questo
+// budget rinunciamo a filtrare quel batch e lasciamo passare le
+// particelle con un warning. Meglio risultati imperfetti in pochi
+// secondi che pipeline bloccata per un provider lento.
 //
-// Tunabile via env TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS.
+// Default 20s: su zone dense (Pistoia, Firenze) una query Overpass che
+// raccoglie building + urbano + strade su 6 ancore con 350m di buffer
+// richiede spesso 10-15s. 20s da` headroom. Tunabile via env
+// TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS.
 const OBSTACLE_FILTER_SOFT_TIMEOUT_MS = parsePositiveIntegerEnv(
   "TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS",
-  15 * 1000,
+  20 * 1000,
 );
 const OVERPASS_MAX_CYCLES = 2;
 const OVERPASS_CYCLE_BACKOFF_MS = 3_500;
 const SCAN_RESULT_CACHE_TTL_MS = 45 * 60 * 1000;
 const TERRAIN_OBSTACLE_MARGIN_METERS = 25;
 const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
-const TERRAIN_OBSTACLE_CLUSTER_RADIUS_METERS = 160;
+// Radius di clustering delle ancore: piu grande = meno ancore, quindi
+// meno chunk Overpass. A 240m riduciamo i blocchi da 10 a ~4-5 su
+// Pistoia (tipico), tagliando il wall-clock del filtro anti-urbano
+// praticamente della meta`. Il prezzo e` query piu grosse (piu around),
+// ma Overpass regge bene 350m×6 ancore per query.
+const TERRAIN_OBSTACLE_CLUSTER_RADIUS_METERS = 240;
 const OBSTACLE_ANCHORS_PER_CHUNK = 6;
 const OBSTACLE_CHUNK_SPLIT_DEPTH = 2;
 // Concurrency knob per la pipeline:
@@ -663,16 +672,25 @@ async function fetchSourcesForProvince(
 ): Promise<SourceFeature[]> {
   const province = PROVINCE_MAP[provinceId];
   const wantFuel = categoryIds.includes("fuel");
+  const wantAia = categoryIds.includes("aia");
+  // Le categorie OSM sono tutte quelle che NON hanno un provider ad-hoc
+  // (fuel -> MIMIT, aia -> ARPAT). Tutte le altre passano da Overpass.
   const overpassCategoryIds = categoryIds.filter(
-    (categoryId) => categoryId !== "fuel",
+    (categoryId) => categoryId !== "fuel" && categoryId !== "aia",
   );
 
-  // Fuel (MIMIT CSV nazionale) e Overpass sono provider indipendenti:
-  // lanciarli in parallelo nasconde i 5-15s del download MIMIT cold dietro
-  // la query Overpass, senza aumentare la pressione su un singolo endpoint.
-  const [fuelSources, overpassSources] = await Promise.all([
+  // MIMIT + ARPAT + Overpass sono tre provider indipendenti: li lanciamo
+  // tutti in parallelo. MIMIT e ARPAT rispondono in <1s (CSV locale /
+  // lista hardcoded), quindi non aggiungono latenza percettibile;
+  // nascondono la propria attesa dietro il collo di bottiglia Overpass.
+  const [fuelSources, aiaSources, overpassSources] = await Promise.all([
     wantFuel
       ? fetchFuelSourcesFromMimit(provinceId, (message) => {
+          reportProgress(reporter, message);
+        })
+      : Promise.resolve<SourceFeature[]>([]),
+    wantAia
+      ? fetchAiaSourcesFromArpat(provinceId, (message) => {
           reportProgress(reporter, message);
         })
       : Promise.resolve<SourceFeature[]>([]),
@@ -685,7 +703,7 @@ async function fetchSourcesForProvince(
       : Promise.resolve<SourceFeature[]>([]),
   ]);
 
-  const sources = [...fuelSources, ...overpassSources];
+  const sources = [...fuelSources, ...aiaSources, ...overpassSources];
 
   reportProgress(
     reporter,
