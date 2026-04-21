@@ -44,12 +44,35 @@ export const SOURCE_CATEGORIES: SourceCategoryDefinition[] = [
   {
     id: "industrial",
     label: "Industriale",
-    description: "Aree o impianti industriali con traccia geospaziale pubblica.",
+    description: "Aree o impianti industriali con traccia geospaziale pubblica (OpenStreetMap).",
     color: "#244c74",
     selectors: [
       { key: "landuse", value: "industrial" },
       { key: "industrial" },
       { key: "man_made", value: "works" },
+      // ciminiere e forni industriali come tracce puntuali
+      { key: "man_made", value: "chimney" },
+      { key: "man_made", value: "kiln" },
+      // cave e attivita` estrattive (polveri, emissioni)
+      { key: "landuse", value: "quarry" },
+    ],
+  },
+  {
+    id: "energy",
+    label: "Energia e rifiuti",
+    description:
+      "Centrali elettriche, discariche, depuratori, inceneritori, isole ecologiche — impianti pubblici ad alta potenziale emissione.",
+    color: "#2f855a",
+    selectors: [
+      // centrali di qualsiasi tipo (power=plant copre termo, biomasse, solare, eolico)
+      { key: "power", value: "plant" },
+      { key: "power", value: "substation" },
+      // rifiuti: discariche, trattamento, trasferimento
+      { key: "landuse", value: "landfill" },
+      { key: "amenity", value: "waste_transfer_station" },
+      { key: "amenity", value: "recycling" },
+      // impianti acque reflue
+      { key: "man_made", value: "wastewater_plant" },
     ],
   },
   {

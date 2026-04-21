@@ -3,6 +3,7 @@ export type SourceCategoryId =
   | "bodyshop"
   | "repair"
   | "industrial"
+  | "energy"
   | "aia";
 
 export type ProvinceId =

@@ -246,6 +246,31 @@ export default function TerrainMap({
               attribution="Agenzia delle Entrate - Cartografia Catastale WMS"
             />
           </LayersControl.Overlay>
+          <LayersControl.Overlay name="CTR Regione Toscana 10k">
+            {/* Carta Tecnica Regionale 1:10.000 — overlay vector-quality
+                con edificato, viabilita`, idrografia a copertura regionale.
+                Fonte: GeoScopio WMS — Regione Toscana (CC-BY-4.0). */}
+            <WMSTileLayer
+              url="https://www502.regione.toscana.it/ows_ctr/com.rt.wms.RTmap/ows?map=owsctr&"
+              layers="rt_ctr.10k"
+              format="image/png"
+              transparent
+              opacity={0.6}
+              attribution="Regione Toscana — GeoScopio CTR 10k"
+            />
+          </LayersControl.Overlay>
+          <LayersControl.Overlay name="Ortofoto AGEA 2019 (Toscana)">
+            {/* Ortofoto regionale AGEA 2019 via GeoScopio. Alternativa
+                ad alta risoluzione al basemap Esri su ambito toscano. */}
+            <WMSTileLayer
+              url="https://www502.regione.toscana.it/wmsraster/com.rt.wms.RTmap/wms?map=wmsofc&"
+              layers="rt_ofc.10k19"
+              format="image/png"
+              transparent={false}
+              opacity={0.95}
+              attribution="Regione Toscana — Ortofoto AGEA 2019"
+            />
+          </LayersControl.Overlay>
         </LayersControl>
 
         <FitToContent
