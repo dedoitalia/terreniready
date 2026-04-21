@@ -162,7 +162,26 @@ type RunScanOptions = {
   // SSE di spingere risultati parziali al client senza attendere che
   // anche l'ultima provincia esca dal filtro anti-urbano.
   reportPartialResult?: PartialResultReporter;
+  // AbortSignal esterno: il chiamante (rotta SSE, cron, job handler) lo
+  // inoltra perche', quando il client chiude la connessione o l'utente
+  // clicca "Annulla", i worker di scansione si fermino prima di lanciare
+  // altro lavoro. Le richieste Overpass/WFS gia in volo scadono per il
+  // loro timeout interno, ma non partono nuove province ne nuovi chunk.
+  signal?: AbortSignal;
 };
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException(
+          typeof signal.reason === "string"
+            ? signal.reason
+            : "Scansione annullata dal client.",
+          "AbortError",
+        );
+  }
+}
 
 type PreparedPolygonObstacle = {
   id: string;
@@ -273,6 +292,7 @@ function delay(ms: number) {
 async function runWithConcurrency<T>(
   tasks: Array<() => Promise<T>>,
   concurrency: number,
+  signal?: AbortSignal,
 ): Promise<T[]> {
   if (tasks.length === 0) return [];
   const results: T[] = new Array(tasks.length);
@@ -280,6 +300,12 @@ async function runWithConcurrency<T>(
 
   const worker = async () => {
     while (true) {
+      // Prima di prendere il task successivo, controlla che non sia stato
+      // richiesto l'abort. Questo trasforma una cancellazione SSE (il
+      // client ha chiuso l'EventSource) in una terminazione ordinata del
+      // pool: i task in volo finiscono normalmente, ma non ne partono
+      // altri. Tipicamente riduce il tempo di stuck da minuti a secondi.
+      throwIfAborted(signal);
       const index = nextIndex++;
       if (index >= tasks.length) return;
       results[index] = await tasks[index]();
@@ -1172,6 +1198,7 @@ async function fetchTerrainObstaclesForProvince(
   provinceId: ProvinceId,
   terrains: TerrainFeature[],
   reporter?: ProgressReporter,
+  signal?: AbortSignal,
 ): Promise<TerrainObstacleLookup> {
   if (terrains.length === 0) {
     return {
@@ -1227,6 +1254,7 @@ async function fetchTerrainObstaclesForProvince(
   const chunkResults = await runWithConcurrency(
     chunkTasks,
     OBSTACLE_CHUNK_CONCURRENCY,
+    signal,
   );
 
   for (const chunkResult of chunkResults) {
@@ -1401,8 +1429,10 @@ async function scanProvince(
   provinceId: ProvinceId,
   categoryIds: SourceCategoryId[],
   reporter?: ProgressReporter,
+  signal?: AbortSignal,
 ) {
   const province = PROVINCE_MAP[provinceId];
+  throwIfAborted(signal);
   reportProgress(reporter, `${province.name}: scansione provincia avviata.`);
   const sources = mergeSources(
     await fetchSourcesForProvince(provinceId, categoryIds, reporter),
@@ -1447,10 +1477,12 @@ async function scanProvince(
       `${province.name}: filtro urbano batch ${batchIndex + 1}/${terrainCandidateBatches.length} su ${terrainBatch.length} particelle.`,
     );
 
+    throwIfAborted(signal);
     const obstacleLookup = await fetchTerrainObstaclesForProvince(
       provinceId,
       terrainBatch,
       reporter,
+      signal,
     );
     const terrainFilter = filterTerrainsByObstacles(
       terrainBatch,
@@ -1554,7 +1586,13 @@ export async function runScan(
       // province in parallelo e, man mano che una completa, emettiamo un
       // partial-result cumulativo.
       const provinceTasks = provinces.map((provinceId) => async () => {
-        const result = await scanProvince(provinceId, categories, reporter);
+        throwIfAborted(options?.signal);
+        const result = await scanProvince(
+          provinceId,
+          categories,
+          reporter,
+          options?.signal,
+        );
         provinceResults.push(result);
         completedCount += 1;
 
@@ -1593,7 +1631,7 @@ export async function runScan(
         return result;
       });
 
-      await runWithConcurrency(provinceTasks, PROVINCE_CONCURRENCY);
+      await runWithConcurrency(provinceTasks, PROVINCE_CONCURRENCY, options?.signal);
 
       const sources = provinceResults
         .flatMap((result) => result.sources)
