@@ -5,8 +5,15 @@ services:
     plan: free
     region: frankfurt
     autoDeploy: true
-    buildCommand: npm install && npm run build
+    buildCommand: npm ci && npm run build
     startCommand: npm start
+    healthCheckPath: /
     envVars:
       - key: NODE_VERSION
         value: 22.22.0
+      # Perf knobs opzionali: tunabili da dashboard Render senza rebuild.
+      # Decommentare per override.
+      # - key: TERRENI_MAX_PRE_FILTER
+      #   value: "140"
+      # - key: TERRENI_OBSTACLE_FILTER_SOFT_TIMEOUT_MS
+      #   value: "15000"
