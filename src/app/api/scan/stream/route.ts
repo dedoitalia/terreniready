@@ -150,6 +150,12 @@ export async function GET(request: NextRequest) {
             reportPartialResult: (partial) => {
               send({ type: "partial-result", result: partial });
             },
+            // Quando il client chiude l'EventSource (bottone "Annulla"
+            // o reload tab), request.signal trigga abortController; il
+            // signal passa a runScan che lo propaga a runWithConcurrency
+            // e a scanProvince: nessuna nuova provincia/chunk parte,
+            // riducendo il lavoro residuo da minuti a secondi.
+            signal: abortController.signal,
           });
 
           send({
