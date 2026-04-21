@@ -24,7 +24,11 @@ const BASE_TERRAIN_SOURCE_CLUSTER_RADIUS_METERS = 225;
 const CADASTRAL_ANCHORS_PER_CHUNK = 10;
 const CADASTRAL_BBOX_SPLIT_DEPTH = 3;
 const CADASTRAL_WFS_PAGE_SIZE = 200;
-const CADASTRAL_WFS_MAX_PAGES = 6;
+// Max pagine WFS per bbox prima di innescare il split bbox ricorsivo e
+// il warning "copertura parziale". A 10 pagine copriamo fino a 2000
+// particelle per bbox, sufficiente per tutte le aree toscane escluse
+// Firenze centro. Con 4 chunk paralleli il worst-case resta contenuto.
+const CADASTRAL_WFS_MAX_PAGES = 10;
 const CADASTRAL_WFS_CACHE_TTL_MS = 45 * 60 * 1000;
 // Il WFS Agenzia Entrate e` un servizio diverso da Overpass: ha rate
 // limit autonomi e non mostra 429 aggressivi come OSM. Mandare piu
