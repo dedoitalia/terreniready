@@ -5,6 +5,12 @@ impianti AUA individuali e quali sono i percorsi realistici per
 ottenerli, tutti a **costo zero** ma con diverse gradazioni di
 complessità tecnica e tempo di sviluppo.
 
+> ⚠️ **Scoperta empirica del 2026-04 (vedi sezione in fondo):**
+> lo scraping degli albi pretori provinciali per ottenere le AUA è
+> **praticamente inutile**. Le AUA vere sono emesse dallo SUAP dei
+> Comuni (273 in Toscana), non dalle 10 Province. Unica via realistica
+> oggi: **Opzione A** (richiesta istituzionale ARAMIS).
+
 ## Cosa è già integrato
 
 - **AIA nazionali** (10 impianti): raffinerie, acciaierie, chimica
@@ -18,17 +24,21 @@ complessità tecnica e tempo di sviluppo.
 
 ## Perché manca un feed AUA completo
 
-L'AUA (D.P.R. 59/2013) è **gestita dalle Province/Città
-Metropolitane** (10 enti in Toscana), non dalla Regione. Ogni
-Provincia pubblica le proprie AUA nel proprio **albo pretorio online**
-con:
+L'AUA (D.P.R. 59/2013) segue un flusso misto:
 
-- CMS diversi (Halley, WEB22, PerlaPA, portali custom)
-- Nessuna API, nessun RSS, nessun filtro strutturato per tipo atto
-- L'oggetto dell'atto è testo libero nel PDF allegato (spesso firmato
-  .p7m), non nei metadati HTML
-- Dati utili (nome azienda, indirizzo, tipo attività) vanno estratti
-  da OCR / text extraction del PDF
+1. L'impresa presenta l'istanza al **SUAP** (Sportello Unico
+   Attività Produttive) del Comune in cui ha sede lo stabilimento.
+2. Il SUAP inoltra alla **Provincia/Città Metropolitana** competente.
+3. La Provincia istruisce la pratica e indice la Conferenza di
+   Servizi con ARPAT/Gestore SII/Vigili del Fuoco/ecc.
+4. L'atto finale di **rilascio AUA è adottato dal SUAP comunale**,
+   sulla base del provvedimento istruttorio provinciale.
+
+**Conseguenza chiave:** gli albi pretori delle Province NON contengono
+gli atti AUA veri e propri. Contengono al massimo provvedimenti
+istruttori o richiami generici. L'atto definitivo sta nell'albo
+pretorio **del Comune**, ed esiste un albo pretorio per ognuno dei
+**273 Comuni toscani**, tutti con CMS diversi.
 
 La Regione Toscana pubblica **solo conteggi aggregati** per anno/provincia
 (`D.2.3.csv` su regione.toscana.it), non l'elenco degli impianti.
@@ -36,9 +46,10 @@ La Regione Toscana pubblica **solo conteggi aggregati** per anno/provincia
 ## Opzione A — Richiesta istituzionale accesso ARAMIS Regione Toscana
 
 ARAMIS è il sistema gestionale interno alla Direzione Ambiente della
-Regione Toscana, contiene tutti gli atti di autorizzazione ambientale
-(incluse le AUA aggregate dalle Province). L'accesso in lettura per
-uso statistico/riuso dati è **possibile su richiesta motivata**.
+Regione Toscana. Riceve i tracciati delle AUA comunali/provinciali
+aggregati a livello regionale. **È l'unica via pulita per avere
+l'intero universo AUA toscano in un colpo solo**, indipendentemente
+da chi ha formalmente emesso il singolo atto.
 
 ### Template PEC
 
@@ -79,8 +90,8 @@ rispetto della normativa sulla privacy (GDPR 2016/679):
 - tipologia di attività autorizzata (codice ATECO, se disponibile)
 - autorizzazioni ricomprese nell'AUA (emissioni aria, scarichi
   idrici, rifiuti, ecc.)
-- Provincia/Città Metropolitana procedente
-- estremi dell'atto (numero e data di determinazione dirigenziale)
+- Provincia/Città Metropolitana procedente e SUAP comunale
+- estremi dell'atto (numero e data di determinazione)
 - stato: vigente / revocata / scaduta
 
 I dati richiesti sono di natura ambientale e ricadono nell'ambito
@@ -88,7 +99,7 @@ della direttiva INSPIRE (d.lgs. 32/2010). L'accesso è motivato da
 finalità di analisi territoriale e sviluppo di strumenti open
 source per la valutazione di prossimità ambientale, senza alcuno
 scopo di lucro diretto o trattamento di dati personali oltre quanto
-già pubblico negli albi pretori provinciali.
+già pubblico negli albi pretori comunali.
 
 In subordine, qualora il dato completo non fosse disponibile in
 formato aggregato regionale, si chiede indicazione dei referenti
@@ -107,116 +118,82 @@ Cordiali saluti,
 Tempi attesi: 30-60 giorni. Probabilità di ottenere il dato completo:
 medio-alta se la richiesta è ben motivata e firmata digitalmente.
 
-## Opzione B — Scraping albi pretori provinciali
+## Opzione B — Scraping albi pretori: perché NON funziona
 
-Percorso tecnico, stimato 2-3 giorni di sviluppo per Provincia,
-moltiplica per le 10 Province toscane = ~3-4 settimane full-time.
+Questa sezione è mantenuta a monito. **Non seguire questa strada.**
 
-### Architettura consigliata (NON da mettere in Next.js runtime)
+### Test empirico eseguito (2026-04-21, Provincia di Pistoia)
 
-```
-GitHub Actions cron (settimanale)
-   ↓
-scripts/update-aua.ts (Node.js standalone)
-   ↓ per ogni Provincia:
-   1. scrape albo pretorio (paginazione)
-   2. filtra atti con "AUA" o "autorizzazione unica ambientale"
-   3. scarica PDF allegato
-   4. estrai testo con pdf-parse (o Tesseract se scansione)
-   5. regex su pattern: ragione sociale, via, comune, CAP
-   6. geocoding via Nominatim (1 req/sec)
-   7. merge + dedupe
-   ↓
-dati/aua-toscana.json (committato nel repo)
-   ↓
-src/lib/aua-provinces.ts legge il JSON a cold start
-   ↓
-integrato in fetchSourcesForProvince accanto ad AIA
-```
+1. Query POST a `trasparenza.provincia.pistoia.it/albopretorio/` con
+   filtro testuale `s_TESTO=autorizzazione unica ambientale`,
+   intervallo 2020-2026.
+2. Paginazione: 219 atti totali identificati (3 pagine di 100).
+3. Download dei 79 atti più recenti (PDF non firmati, allegato
+   principale).
+4. `pdftotext -layout` per estrazione testo.
+5. Ispezione manuale del contenuto.
 
-### URL base degli albi pretori toscani
+**Risultato:** ZERO dei 79 atti erano rilasci AUA. La query
+recupera invece:
 
-Verificati manualmente al 2025-2026. Cambiano nel tempo — da
-rivalidare prima di ogni run dello scraper.
+- Atti di liquidazione fatture che citano il fornitore
+  "autorizzazione unica ambientale" come causale
+- Determinazioni per lavori pubblici con riferimenti normativi AUA
+- Provvedimenti organizzativi dell'Area Tecnica provinciale
 
-| Provincia         | Albo pretorio                                                                        | CMS       |
-| ----------------- | ------------------------------------------------------------------------------------ | --------- |
-| Arezzo            | https://www.provincia.arezzo.it/servizi/atti-amministrativi/albo-pretorio             | Halley    |
-| Firenze (CM)      | https://www.cittametropolitana.fi.it/albo-pretorio/                                  | Custom    |
-| Grosseto          | https://trasparenza.provincia.grosseto.it/albopretorio/                              | Halley    |
-| Livorno           | https://www.provincia.livorno.it/it/albo-pretorio                                    | Custom    |
-| Lucca             | https://www.provincia.lucca.it/albo-pretorio                                         | Custom    |
-| Massa-Carrara     | https://trasparenza.provincia.ms.it/albopretorio/                                    | Halley    |
-| Pisa              | https://www.provincia.pisa.it/it/albo-pretorio                                       | Custom    |
-| Pistoia           | https://trasparenza.provincia.pistoia.it/albopretorio/                               | Halley    |
-| Prato             | https://trasparenza.provincia.prato.it/albopretorio/                                 | Halley    |
-| Siena             | https://www.provincia.siena.it/Albo-Pretorio                                         | Custom    |
+Il motivo strutturale è spiegato sopra: l'atto finale AUA è emesso
+dal **SUAP del Comune**, non dalla Provincia. La Provincia emette
+solo l'atto istruttorio, non la formale autorizzazione.
 
-Le 5 Province su Halley condividono lo stesso motore di ricerca
-(MVPG=AmvRicercaAlbo) quindi un singolo parser copre 50% del lavoro.
+### Perché anche passare ai Comuni non scala
 
-### Ricetta Halley (Pistoia/Grosseto/MS/Prato/Arezzo)
+I Comuni toscani sono **273**, ciascuno con:
+- Un proprio albo pretorio online (CMS Halley/WEB22/MunicipioWeb/
+  custom in proporzioni variabili)
+- Una propria convenzione di nomenclatura per gli atti SUAP
+- Una propria frequenza di pubblicazione
+- Un proprio formato PDF (molti vecchi scansionati, richiedono OCR)
 
-```
-POST {base}/albopretorio/Main.do
-  MVPG=AmvRicercaAlbo
-  s_TESTO=autorizzazione unica ambientale
-  Search=Cerca
-  DATA_DAL=01/01/2020
-  DATA_AL=31/12/2025
+Stima realistica per il lavoro end-to-end:
+- Mappatura 273 albi: 2 settimane
+- Scrittura adapter per 4-5 CMS diversi: 2 settimane
+- Tuning regex per estrazione nome azienda/indirizzo: 2 settimane
+- Geocoding + dedupe + QA: 1 settimana
+- Manutenzione continua (i siti cambiano): ~1 giorno/mese perenne
 
-Parse HTML → estrai elenco {id, numero, data, settore}
-Per ogni atto:
-  GET {base}/albopretorio/Main.do?MVPG=AmvAlboDettaglio&id={id}
-  Parse HTML → trova div "allegato principale"
-  Estrai href di AlboDownload.jsp?ID_BLOB=...
-  GET quel PDF
-  pdf-parse del PDF → testo
-  regex:
-    /Ditta:?\s*(.+?)[\n\r]/i
-    /Sede (?:legale|operativa|stabilimento):?\s*(.+?)[\n\r]/i
-    /(\d{5})\s+([A-Z][A-Za-zà-ù'\s]+?)\s*\(([A-Z]{2})\)/
-  geocode (nome azienda + indirizzo + comune)
-```
+Totale: ~2 mesi per primo deploy + manutenzione continua, con
+qualità del dato comunque non affidabile per decisioni business.
 
-### Librerie consigliate
+**Il rapporto costo/beneficio non regge**, soprattutto se confrontato
+con i 30-60 giorni di attesa per una risposta ARAMIS strutturata.
 
-- `got` o `undici` per HTTP
-- `pdf-parse` per text extraction (pure-JS, no binary deps)
-- `cheerio` per HTML parsing
-- `p-queue` per rate limiting (1 req/sec su Nominatim)
-- `fast-xml-parser` già nel progetto, non serve aggiungerlo
-
-## Opzione C — Scraping a bassa intensità nel tempo
-
-Se non hai 3 settimane per B, un compromesso:
-
-- Parti da UNA sola Provincia (quella più rilevante per il tuo
-  business, probabilmente Pistoia)
-- Script manuale su tua macchina, run mensile
-- Commit del JSON aggiornato
-
-È l'80/20 pragmatico. Inizia, valuta il rapporto costo/beneficio,
-poi scala a 2-3 Province se utile.
-
-## Opzione D — Via dati commerciali (NON gratuito, per riferimento)
+## Opzione C — Dati commerciali (NON gratuito, per riferimento)
 
 - **InfoCamere — Registro Imprese**: elenco PMI manifatturiere per
   codice ATECO → geocoding. Non distingue AUA. A pagamento.
 - **Cerved/CRIBIS**: database aziende con metadati ambientali. A
   pagamento e non garantito per AUA.
+- **EcoCerved (consortile camerale)**: dati ambientali aggregati
+  da Camere di Commercio. A pagamento.
 
 Non sono opzioni gratuite, le cito solo per completezza.
 
 ## Raccomandazione finale
 
-Per un SaaS di prodotto **consiglio fortemente l'Opzione A**
-(richiesta ARAMIS): template PEC sopra, tempo di risposta 30-60gg,
-costo zero, risultato strutturato e legalmente pulito. Se la
-risposta è negativa o parziale, si ripiega su B/C.
+**Manda la PEC di Opzione A oggi.** Costa 5 minuti + firma digitale.
+Nel peggiore dei casi ricevi un no motivato, nel migliore ricevi un
+dump CSV con centinaia/migliaia di impianti AUA georeferenziati in
+~2 mesi. Qualunque altra strada è peggiore sul rapporto costo/tempo/
+qualità dato.
 
-L'Opzione B ha senso solo se:
-- Non puoi aspettare 60 giorni
-- Hai già infrastruttura CI/CD
-- Accetti che i dati avranno un tasso di errore ~10-15% (nome
-  azienda non sempre ben estratto, indirizzi talvolta incompleti)
+Mentre aspetti ARAMIS, la copertura "fonti emissive" dell'app resta:
+- AIA nazionali (hardcoded, ARPAT): 10 grandi impianti
+- MIMIT distributori: centinaia per provincia
+- OSM via Overpass: officine, carrozzerie, industriale, energia e
+  rifiuti, cave, ciminiere, depuratori, discariche — già migliaia
+  di POI per la Toscana
+
+Questa copertura è sufficiente per il matching prossimità particelle
+catastali. L'aggiunta delle AUA comunali aumenterebbe la copertura
+su PMI minori, che però in OSM sono spesso già mappate sotto
+`industrial=*` o `craft=*`.
