@@ -67,6 +67,22 @@ const TERRAIN_OBSTACLE_MIN_RADIUS_METERS = 45;
 const TERRAIN_OBSTACLE_CLUSTER_RADIUS_METERS = 160;
 const OBSTACLE_ANCHORS_PER_CHUNK = 6;
 const OBSTACLE_CHUNK_SPLIT_DEPTH = 2;
+// Concurrency knob per la pipeline:
+// - province: 2 province lavorano in parallelo, riducendo il wall-clock
+//   di scan multi-provincia praticamente della meta`. Overpass ha 4
+//   endpoint, quindi 2 province parallele non saturano la pool.
+// - obstacle chunks: dentro una provincia i chunk Overpass per il filtro
+//   urbano girano in parallelo a coppie. Combinato con il limite
+//   provincie resta comunque sotto ~4 richieste Overpass concorrenti.
+// Tunabili da env per aggiustare senza rebuild (Render free).
+const PROVINCE_CONCURRENCY = parsePositiveIntegerEnv(
+  "TERRENI_PROVINCE_CONCURRENCY",
+  2,
+);
+const OBSTACLE_CHUNK_CONCURRENCY = parsePositiveIntegerEnv(
+  "TERRENI_OBSTACLE_CONCURRENCY",
+  2,
+);
 
 const EXCLUDED_URBAN_LANDUSES = new Set(["residential", "industrial", "commercial"]);
 const ROAD_SELECTORS = [
@@ -238,6 +254,36 @@ function delay(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+// Worker-pool helper: lancia al massimo `concurrency` task in parallelo,
+// ogni worker tira la prossima task appena finisce la precedente.
+// Preserva l'ordine dei risultati (results[i] = tasks[i]()). Perfetto per
+// bbox catastali, province, chunk Overpass: indipendenti tra loro, ma
+// che vogliamo limitare per non martellare il provider condiviso.
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number,
+): Promise<T[]> {
+  if (tasks.length === 0) return [];
+  const results: T[] = new Array(tasks.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= tasks.length) return;
+      results[index] = await tasks[index]();
+    }
+  };
+
+  const poolSize = Math.min(Math.max(1, concurrency), tasks.length);
+  const workers: Array<Promise<void>> = [];
+  for (let i = 0; i < poolSize; i += 1) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
 }
 
 function reportProgress(reporter: ProgressReporter | undefined, message: string) {
@@ -1128,43 +1174,55 @@ async function fetchTerrainObstaclesForProvince(
 
   reportProgress(
     reporter,
-    `${province.name}: verifica edifici, urbanizzato e strade su ${anchorChunks.length} blocchi di contesto.`,
+    `${province.name}: verifica edifici, urbanizzato e strade su ${anchorChunks.length} blocchi di contesto (concurrency=${Math.min(OBSTACLE_CHUNK_CONCURRENCY, anchorChunks.length)}).`,
   );
 
-  for (const [index, anchorChunk] of anchorChunks.entries()) {
-    const chunkTerrainCount = anchorChunk.reduce(
-      (sum, anchor) => sum + anchor.terrainIds.length,
-      0,
-    );
-    reportProgress(
-      reporter,
-      `${province.name}: blocco filtri ${index + 1}/${anchorChunks.length} su ${anchorChunk.length} ancore e ${chunkTerrainCount} terreni.`,
-    );
-    const chunkResult = await fetchTerrainObstaclesForChunk(
-      province.name,
-      `${index + 1}/${anchorChunks.length}`,
-      anchorChunk,
-      reporter,
-    );
+  // Chunk indipendenti (aree diverse della provincia): li lanciamo in
+  // parallelo ma con un cap basso (default 2) per non esaurire i 4
+  // endpoint Overpass con richieste concorrenti, soprattutto se piu
+  // province girano in parallelo a loro volta.
+  //
+  // Nota: la vecchia logica aveva un `break` al primo warningTriggered
+  // per non lanciare altri blocchi quando un chunk scade in soft-timeout.
+  // In parallelo tutti i chunk sono gia in volo all'inizio, quindi non
+  // c'e un reale "fermare lavoro futuro": accettiamo tutti i risultati e
+  // conserviamo il primo warning per il banner UI.
+  const chunkTasks = anchorChunks.map(
+    (anchorChunk, index) => async () => {
+      const chunkTerrainCount = anchorChunk.reduce(
+        (sum, anchor) => sum + anchor.terrainIds.length,
+        0,
+      );
+      reportProgress(
+        reporter,
+        `${province.name}: blocco filtri ${index + 1}/${anchorChunks.length} avviato (${anchorChunk.length} ancore, ${chunkTerrainCount} terreni).`,
+      );
+      return fetchTerrainObstaclesForChunk(
+        province.name,
+        `${index + 1}/${anchorChunks.length}`,
+        anchorChunk,
+        reporter,
+      );
+    },
+  );
 
+  const chunkResults = await runWithConcurrency(
+    chunkTasks,
+    OBSTACLE_CHUNK_CONCURRENCY,
+  );
+
+  for (const chunkResult of chunkResults) {
     for (const building of chunkResult.buildings) {
       buildingMap.set(building.id, building);
     }
-
     for (const urbanArea of chunkResult.urbanAreas) {
       urbanAreaMap.set(urbanArea.id, urbanArea);
     }
-
     for (const road of chunkResult.roads) {
       roadMap.set(road.id, road);
     }
-
     if (!warning && chunkResult.warning) {
       warning = chunkResult.warning;
-    }
-
-    if (chunkResult.warningTriggered) {
-      break;
     }
   }
 
@@ -1464,30 +1522,36 @@ export async function runScan(
   const scanPromise = (async () => {
     reportProgress(
       reporter,
-      `Scansione avviata su ${provinces.length} province e ${categories.length} categorie.`,
+      `Scansione avviata su ${provinces.length} province e ${categories.length} categorie (concurrency=${Math.min(PROVINCE_CONCURRENCY, provinces.length)}).`,
     );
 
     try {
       const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
+      const totalProvinces = provinces.length;
+      let completedCount = 0;
 
-      for (const [provinceIndex, provinceId] of provinces.entries()) {
-        provinceResults.push(await scanProvince(provinceId, categories, reporter));
+      // Province indipendenti: bbox disgiunti, fuel MIMIT e WFS catastale
+      // condividono cache+inflight a livello di modulo, quindi i lavori
+      // duplicati si collassano naturalmente. Lanciamo PROVINCE_CONCURRENCY
+      // province in parallelo e, man mano che una completa, emettiamo un
+      // partial-result cumulativo.
+      const provinceTasks = provinces.map((provinceId) => async () => {
+        const result = await scanProvince(provinceId, categories, reporter);
+        provinceResults.push(result);
+        completedCount += 1;
 
-        // Solo in caso multi-provincia emettiamo uno snapshot parziale:
-        // sul caso mono-provincia il risultato parziale coincide con
-        // quello finale, quindi risparmiamo il clone+encode aggiuntivo.
-        const hasMoreProvinces = provinceIndex < provinces.length - 1;
-        if (partialReporter && hasMoreProvinces) {
+        // Emette lo snapshot finche' restano province in volo. Sull'ultima
+        // completata saltiamo (il "result" finale ha gli stessi dati e
+        // viene inviato dal caller).
+        if (partialReporter && completedCount < totalProvinces) {
           const partialSources = provinceResults
-            .flatMap((result) => result.sources)
+            .flatMap((r) => r.sources)
             .sort((left, right) => left.name.localeCompare(right.name, "it"));
           const partialTerrains = provinceResults
-            .flatMap((result) => result.terrains)
+            .flatMap((r) => r.terrains)
             .sort((left, right) => left.distanceMeters - right.distanceMeters);
-          const partialWarnings = provinceResults.flatMap(
-            (result) => result.warnings,
-          );
-          const partialNotes = provinceResults.flatMap((result) => result.notes);
+          const partialWarnings = provinceResults.flatMap((r) => r.warnings);
+          const partialNotes = provinceResults.flatMap((r) => r.notes);
 
           partialReporter({
             sources: partialSources,
@@ -1502,12 +1566,16 @@ export async function runScan(
               warnings: partialWarnings,
               notes: [
                 ...partialNotes,
-                `Risultato parziale: ${provinceIndex + 1}/${provinces.length} province processate.`,
+                `Risultato parziale: ${completedCount}/${totalProvinces} province processate.`,
               ],
             },
           });
         }
-      }
+
+        return result;
+      });
+
+      await runWithConcurrency(provinceTasks, PROVINCE_CONCURRENCY);
 
       const sources = provinceResults
         .flatMap((result) => result.sources)
