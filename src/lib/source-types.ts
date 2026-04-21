@@ -52,6 +52,16 @@ export const SOURCE_CATEGORIES: SourceCategoryDefinition[] = [
       { key: "man_made", value: "works" },
     ],
   },
+  {
+    id: "aia",
+    label: "Impianti AIA",
+    description:
+      "Stabilimenti con Autorizzazione Integrata Ambientale di competenza nazionale (ARPAT Toscana): raffinerie, acciaierie, chimica pesante, grandi centrali.",
+    color: "#8b5cf6",
+    // Nessun selettore OSM: questa categoria non e` alimentata da
+    // Overpass ma dal modulo src/lib/aia-arpat.ts (lista ARPAT).
+    selectors: [],
+  },
 ];
 
 export const SOURCE_CATEGORY_MAP = Object.fromEntries(

@@ -2,7 +2,8 @@ export type SourceCategoryId =
   | "fuel"
   | "bodyshop"
   | "repair"
-  | "industrial";
+  | "industrial"
+  | "aia";
 
 export type ProvinceId =
   | "AR"
@@ -28,7 +29,7 @@ export type BoundingBox = {
   east: number;
 };
 
-export type SourceDataProviderId = "osm" | "mimit" | "ispra";
+export type SourceDataProviderId = "osm" | "mimit" | "ispra" | "arpat";
 export type TerrainDataProviderId = "osm" | "cadastre";
 
 export type SourceFeature = {
