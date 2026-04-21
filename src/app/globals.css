@@ -433,6 +433,21 @@ button {
   box-shadow: 0 30px 80px rgba(28, 39, 31, 0.16);
 }
 
+/* Quando la mappa vive dentro l'accordion del ledger, togliamo l'altezza
+   viewport (64vh/100vh-14rem del default) e stringiamo a una card piu
+   compatta. Selettore multiclasse = specificita 2, vince sulle arbitrary
+   di Tailwind che sono classi singole. */
+.terrain-accordion-map .terrain-map-frame {
+  height: 360px;
+  border-radius: 24px;
+}
+
+@media (min-width: 1024px) {
+  .terrain-accordion-map .terrain-map-frame {
+    height: 520px;
+  }
+}
+
 .terrain-map-overlay {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 24px;
