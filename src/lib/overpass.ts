@@ -128,8 +128,15 @@ type CachedScanResult = {
 
 type ProgressReporter = (event: ScanProgressEvent) => void;
 
+type PartialResultReporter = (result: ScanResponse) => void;
+
 type RunScanOptions = {
   reportProgress?: ProgressReporter;
+  // Invocata dopo il completamento di ogni provincia con uno snapshot
+  // "cumulativo" delle province gia processate. Permette allo streaming
+  // SSE di spingere risultati parziali al client senza attendere che
+  // anche l'ultima provincia esca dal filtro anti-urbano.
+  reportPartialResult?: PartialResultReporter;
 };
 
 type PreparedPolygonObstacle = {
@@ -1419,6 +1426,7 @@ export async function runScan(
   const warnings: string[] = [];
   const notes: string[] = [];
   const reporter = options?.reportProgress;
+  const partialReporter = options?.reportPartialResult;
   const provinces = provinceIds.filter((provinceId) => provinceId in PROVINCE_MAP);
   const categories = categoryIds.filter((categoryId) =>
     SOURCE_CATEGORIES.some((category) => category.id === categoryId),
@@ -1462,8 +1470,43 @@ export async function runScan(
     try {
       const provinceResults: Array<Awaited<ReturnType<typeof scanProvince>>> = [];
 
-      for (const provinceId of provinces) {
+      for (const [provinceIndex, provinceId] of provinces.entries()) {
         provinceResults.push(await scanProvince(provinceId, categories, reporter));
+
+        // Solo in caso multi-provincia emettiamo uno snapshot parziale:
+        // sul caso mono-provincia il risultato parziale coincide con
+        // quello finale, quindi risparmiamo il clone+encode aggiuntivo.
+        const hasMoreProvinces = provinceIndex < provinces.length - 1;
+        if (partialReporter && hasMoreProvinces) {
+          const partialSources = provinceResults
+            .flatMap((result) => result.sources)
+            .sort((left, right) => left.name.localeCompare(right.name, "it"));
+          const partialTerrains = provinceResults
+            .flatMap((result) => result.terrains)
+            .sort((left, right) => left.distanceMeters - right.distanceMeters);
+          const partialWarnings = provinceResults.flatMap(
+            (result) => result.warnings,
+          );
+          const partialNotes = provinceResults.flatMap((result) => result.notes);
+
+          partialReporter({
+            sources: partialSources,
+            terrains: partialTerrains.slice(0, MAX_TERRAINS),
+            meta: {
+              queryAt: new Date().toISOString(),
+              radiusMeters: SEARCH_RADIUS_METERS,
+              selectedProvinceIds: provinces,
+              selectedCategoryIds: categories,
+              totalSources: partialSources.length,
+              totalTerrains: partialTerrains.length,
+              warnings: partialWarnings,
+              notes: [
+                ...partialNotes,
+                `Risultato parziale: ${provinceIndex + 1}/${provinces.length} province processate.`,
+              ],
+            },
+          });
+        }
       }
 
       const sources = provinceResults
